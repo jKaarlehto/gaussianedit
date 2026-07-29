@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>splat-seg</title>
+<style>
+  :root {
+    --bg: #0d0f12;
+    --panel: #14181d;
+    --line: #262d35;
+    --ink: #cfd6dd;
+    --dim: #6b7783;
+    --hot: #ff5c2b;
+    --ok: #58d6a8;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+  canvas { display: block; }
+  button, input { touch-action: manipulation; }
+
+  #ui {
+    position: fixed; top: 12px; left: 12px; width: 268px;
+    z-index: 10;
+    background: color-mix(in srgb, var(--panel) 88%, transparent);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--line); border-radius: 4px;
+    font-family: var(--mono); font-size: 11px; color: var(--ink);
+    line-height: 1.5;
+  }
+  #ui header {
+    padding: 8px 10px; border-bottom: 1px solid var(--line);
+    display: flex; justify-content: space-between; align-items: baseline;
+  }
+  #ui header b { font-weight: 600; letter-spacing: .08em; text-transform: uppercase; font-size: 10px; }
+  #ui section { padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  #ui section:last-child { border-bottom: 0; }
+  label { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 4px 0; color: var(--dim); }
+  label span.v { color: var(--ink); font-variant-numeric: tabular-nums; }
+  input[type=range] { flex: 1; accent-color: var(--hot); height: 14px; }
+  .seg { display: flex; gap: 0; margin: 6px 0 2px; }
+  .seg button {
+    flex: 1; padding: 5px 0; background: transparent; color: var(--dim);
+    border: 1px solid var(--line); font-family: var(--mono); font-size: 10px;
+    cursor: pointer; letter-spacing: .04em;
+  }
+  .seg button + button { border-left: 0; }
+  .seg button[aria-pressed="true"] { background: var(--hot); color: #0d0f12; border-color: var(--hot); }
+  .row { display: flex; gap: 6px; margin-top: 6px; }
+  .row button {
+    flex: 1; padding: 6px 0; background: transparent; color: var(--ink);
+    border: 1px solid var(--line); font-family: var(--mono); font-size: 10px; cursor: pointer;
+  }
+  .row button:hover { border-color: var(--hot); color: var(--hot); }
+  #bar { height: 2px; background: var(--line); }
+  #bar i { display: block; height: 100%; width: 0; background: var(--hot); transition: width .1s linear; }
+  #status { color: var(--dim); }
+  #status.busy { color: var(--hot); }
+  #status.ready { color: var(--ok); }
+  #workPanel { min-height: 66px; }
+  #workMain { display: flex; align-items: center; gap: 7px; }
+  #workMain i {
+    flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--dim); box-shadow: 0 0 0 2px #0d0f12;
+  }
+  #workTitle {
+    min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis;
+    color: var(--ink); font-size: 10px; font-weight: 500; white-space: nowrap;
+  }
+  #workElapsed { color: var(--dim); font-size: 9px; font-variant-numeric: tabular-nums; }
+  #workDetail { margin-top: 4px; color: var(--dim); font-size: 9px; line-height: 1.35; }
+  #workSteps { display: flex; gap: 4px; margin-top: 7px; }
+  #workSteps span {
+    flex: 1; min-width: 0; padding-top: 4px;
+    border-top: 1px solid var(--line); color: var(--dim);
+    font-size: 8px; overflow: hidden; text-overflow: ellipsis;
+    text-align: center; text-transform: uppercase; white-space: nowrap;
+  }
+  #workSteps span[data-state="done"] { border-color: var(--ok); color: var(--ok); }
+  #workSteps span[data-state="active"] { border-color: var(--hot); color: var(--ink); }
+  #workPanel[data-state="busy"] #workMain i,
+  #workPanel[data-state="queued"] #workMain i {
+    background: var(--hot); animation: workPulse 1.15s ease-in-out infinite;
+  }
+  #workPanel[data-state="ready"] #workMain i { background: var(--ok); }
+  #workPanel[data-state="error"] #workMain i { background: #ef6b73; }
+  #workPanel[data-state="queued"] #workTitle { color: var(--hot); }
+  @keyframes workPulse {
+    0%, 100% { opacity: .35; transform: scale(.75); }
+    50% { opacity: 1; transform: scale(1.2); }
+  }
+  kbd { border: 1px solid var(--line); padding: 0 3px; border-radius: 2px; color: var(--ink); }
+  #hint { color: var(--dim); font-size: 10px; }
+  #drop {
+    position: fixed; inset: 0; display: grid; place-items: center;
+    font-family: var(--mono); color: var(--dim); font-size: 12px; pointer-events: none;
+  }
+  #selectionOutline {
+    position: fixed; inset: 0; z-index: 4; width: 100vw; height: 100vh;
+    pointer-events: none; image-rendering: auto;
+    filter: drop-shadow(0 0 2px #000) drop-shadow(0 0 2px var(--hot));
+  }
+  #selectionOutline[data-editing="true"] {
+    pointer-events: auto; cursor: crosshair;
+  }
+  #brushCursor {
+    position: fixed; z-index: 11; display: none; pointer-events: none;
+    border: 1px solid #fff; border-radius: 50%;
+    box-shadow: 0 0 0 1px #000, 0 0 5px var(--hot);
+    transform: translate(-50%, -50%);
+  }
+  #viewport[data-selection-state="encoding"] { cursor: none; }
+  #viewport[data-selection-state="ready"] { cursor: crosshair; }
+  #encodingCue {
+    position: fixed; z-index: 6; left: 50%; top: 50%;
+    min-width: 250px; padding: 10px 13px;
+    transform: translate(-50%, -50%);
+    border: 1px solid color-mix(in srgb, var(--hot) 72%, var(--line));
+    border-radius: 4px; pointer-events: none;
+    background: color-mix(in srgb, #090c10 88%, transparent);
+    box-shadow: 0 12px 38px #000a, 0 0 28px color-mix(in srgb, var(--hot) 18%, transparent);
+    backdrop-filter: blur(8px);
+    font-family: var(--mono); text-align: center;
+  }
+  #encodingCue b {
+    display: block; color: var(--ink); font-size: 10px;
+    font-weight: 600; letter-spacing: .1em; text-transform: uppercase;
+  }
+  #encodingCue span {
+    display: block; margin-top: 3px; color: var(--dim); font-size: 9px;
+  }
+  #encodingCue::after {
+    content: ""; display: block; width: 74%; height: 1px; margin: 8px auto 0;
+    background: linear-gradient(90deg, transparent, var(--hot), transparent);
+    transform-origin: center;
+    animation: encodePulse 3s ease-in-out infinite;
+  }
+  #encodingCue[data-state="error"] {
+    border-color: #ef6b73;
+  }
+  #encodingCue[data-state="error"]::after {
+    background: linear-gradient(90deg, transparent, #ef6b73, transparent);
+    animation: none;
+  }
+  #encodingCursor {
+    position: fixed; z-index: 20; display: none; pointer-events: none;
+    width: 30px; height: 30px; transform: translate(-50%, -50%);
+    border: 1px solid #fff9; border-radius: 50%;
+    box-shadow: 0 0 0 1px #000b;
+  }
+  #encodingCursor::before, #encodingCursor::after {
+    content: ""; position: absolute; inset: 4px;
+    border: 1px solid var(--hot); border-radius: 50%;
+    animation: encodeCursor 3s ease-in-out infinite;
+  }
+  #encodingCursor::after {
+    inset: 11px; border: 0; background: var(--hot);
+    box-shadow: 0 0 8px var(--hot); animation-delay: -1.5s;
+  }
+  #encodingCursor span {
+    position: absolute; left: 22px; top: 20px;
+    padding: 2px 4px; border: 1px solid var(--line); border-radius: 2px;
+    background: #080a0ddd; color: var(--ink);
+    font-family: var(--mono); font-size: 8px; letter-spacing: .05em;
+    text-transform: uppercase; white-space: nowrap;
+  }
+  @keyframes encodePulse {
+    0%, 100% { opacity: .28; transform: scaleX(.35); }
+    50% { opacity: 1; transform: scaleX(1); }
+  }
+  @keyframes encodeCursor {
+    0%, 100% { opacity: .35; transform: scale(.55) rotate(0deg); }
+    50% { opacity: 1; transform: scale(1.15) rotate(180deg); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #encodingCue::after, #encodingCursor::before, #encodingCursor::after,
+    #workPanel[data-state="busy"] #workMain i,
+    #workPanel[data-state="queued"] #workMain i {
+      animation: none;
+    }
+  }
+  #selectionProps {
+    position: fixed; z-index: 12; top: 12px; right: 12px; width: 292px;
+    max-height: calc(100vh - 24px); overflow-y: auto;
+    background: color-mix(in srgb, var(--panel) 94%, transparent);
+    backdrop-filter: blur(10px); border: 1px solid var(--line); border-radius: 4px;
+    box-shadow: 0 14px 40px #0009;
+    font-family: var(--mono); font-size: 11px; color: var(--ink); line-height: 1.45;
+  }
+  #selectionProps[hidden] { display: none; }
+  #selectionProps header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 10px; border-bottom: 1px solid var(--line);
+  }
+  #selectionProps header b { text-transform: uppercase; font-size: 10px; letter-spacing: .08em; }
+  #selectionProps header span { color: var(--ok); font-variant-numeric: tabular-nums; }
+  #selectionProps section { padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  #selectionProps section:last-child { border-bottom: 0; }
+  #selectionProps h3 {
+    margin: 0 0 5px; color: var(--dim); font-size: 9px;
+    text-transform: uppercase; letter-spacing: .08em; font-weight: 500;
+  }
+  #selectionProps .method button { padding: 6px 0; }
+  #selectionProps .note { margin-top: 6px; color: var(--dim); font-size: 9px; }
+  #selectionProps .note strong { color: var(--ink); font-weight: 500; }
+  #selectionMeta {
+    margin-top: 6px; padding: 6px 7px; color: var(--dim); font-size: 9px;
+    background: #0c0f13; border: 1px solid var(--line);
+    font-variant-numeric: tabular-nums;
+  }
+  #selectionProps .commit button:last-child {
+    background: var(--hot); border-color: var(--hot); color: #0d0f12;
+  }
+  #closeProps {
+    flex: 0 0 auto; width: 22px; height: 22px; padding: 0;
+    border: 1px solid var(--line); background: transparent; color: var(--dim); cursor: pointer;
+  }
+  #closeProps:hover { color: var(--ink); border-color: var(--ink); }
+  [data-tip] { position: relative; }
+  [data-tip]:hover::after, [data-tip]:focus-visible::after {
+    content: attr(data-tip); position: absolute; z-index: 30;
+    left: 50%; bottom: calc(100% + 7px); transform: translateX(-50%);
+    width: max-content; max-width: 220px; padding: 5px 7px;
+    border: 1px solid var(--line); border-radius: 3px;
+    background: #080a0d; color: var(--ink); font-size: 9px;
+    line-height: 1.35; letter-spacing: 0; text-transform: none;
+    white-space: normal; pointer-events: none; box-shadow: 0 4px 16px #000a;
+  }
+  #projectionPip {
+    position: fixed; right: 12px; bottom: 12px; width: clamp(240px, 28vw, 420px);
+    z-index: 10;
+    overflow: hidden; pointer-events: none;
+    background: color-mix(in srgb, var(--panel) 92%, transparent);
+    border: 1px solid var(--line); border-radius: 4px;
+    box-shadow: 0 12px 36px #0008;
+    font-family: var(--mono); color: var(--ink);
+  }
+  body[data-inspector="true"] #projectionPip { right: auto; left: 12px; }
+  #projectionPip header {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding: 7px 9px; border-bottom: 1px solid var(--line);
+    font-size: 10px; letter-spacing: .04em;
+  }
+  #projectionPip header b { font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
+  #projectionStatus { color: var(--dim); font-variant-numeric: tabular-nums; }
+  #projectionPip[data-stale="true"] #projectionStatus { color: var(--hot); }
+  #projectionViewport {
+    position: relative; min-height: 135px; display: grid; place-items: center;
+    background:
+      linear-gradient(45deg, #11151a 25%, transparent 25%) 0 0 / 12px 12px,
+      linear-gradient(45deg, transparent 75%, #11151a 75%) 0 0 / 12px 12px,
+      #0a0c0f;
+  }
+  #projectionCanvas { width: 100%; height: auto; }
+  #projectionEmpty {
+    position: absolute; color: var(--dim); font-size: 10px; letter-spacing: .04em;
+  }
+  #projectionPip footer {
+    display: flex; gap: 12px; padding: 5px 9px;
+    border-top: 1px solid var(--line); color: var(--dim); font-size: 9px;
+  }
+  #projectionPip footer i {
+    display: inline-block; width: 7px; height: 7px; margin-right: 4px; border-radius: 50%;
+  }
+  #projectionPip footer .mask { background: var(--hot); }
+  #projectionPip footer .seed { background: var(--ok); }
+
+  @media (max-width: 640px) {
+    #projectionPip { width: min(46vw, 280px); }
+    #selectionProps { top: auto; right: 8px; bottom: 8px; width: min(310px, calc(100vw - 16px)); }
+    #projectionPip { display: none; }
+  }
+</style>
+</head>
+<body>
+  <div id="drop">drop a .ply / .ksplat / .splat / .spz file anywhere</div>
+  <div id="encodingCue" hidden role="status" aria-live="polite" data-state="encoding">
+    <b id="encodingCueTitle">Encoding selection view</b>
+    <span id="encodingCueDetail">Selection will be ready when this view is frozen.</span>
+  </div>
+  <div id="encodingCursor" aria-hidden="true"><span id="encodingCursorLabel">encoding</span></div>
+  <canvas id="selectionOutline" hidden aria-hidden="true"></canvas>
+  <div id="brushCursor" aria-hidden="true"></div>
+
+  <div id="ui">
+    <header><b>splat-seg</b><span id="status">loading model…</span></header>
+    <div id="bar" hidden><i></i></div>
+
+    <section>
+      <div id="hint">Click an object or region. The best automatic mask appears first; refine it only when needed. <kbd>Shift</kbd>+click removes.<br>
+        Fly with <kbd>W</kbd>/<kbd>S</kbd> forward/back, <kbd>A</kbd>/<kbd>D</kbd> strafe, <kbd>Q</kbd>/<kbd>E</kbd> turn left/right, <kbd>Ctrl</kbd>/<kbd>Space</kbd> down/up, <kbd>Shift</kbd> to sprint.</div>
+    </section>
+
+    <section id="workPanel" data-state="idle" aria-live="polite" aria-atomic="true">
+      <div id="workMain">
+        <i aria-hidden="true"></i>
+        <b id="workTitle">Waiting for a scene</b>
+        <span id="workElapsed"></span>
+      </div>
+      <div id="workDetail">Drop a splat file to begin.</div>
+      <div id="workSteps" hidden></div>
+    </section>
+
+    <section>
+      <label>selected <span class="v" id="count">0</span></label>
+      <label>total splats <span class="v" id="total">—</span></label>
+      <div class="row">
+        <button id="clear" data-tip="Clear every selected splat">Clear</button>
+        <button id="isolate" aria-pressed="false" data-tip="Hide the source cloud and show only the selection overlay">Selection only</button>
+        <button id="export" data-tip="Download selected splat indices as a binary Int32 array">Export ids</button>
+      </div>
+    </section>
+  </div>
+
+  <aside id="selectionProps" hidden aria-label="Selection properties">
+    <header>
+      <div><b>Selection preview</b> <span id="selectionResult">0 splats</span></div>
+      <button id="closeProps" aria-label="Close selection properties" data-tip="Keep the selection and close this inspector">×</button>
+    </header>
+
+    <section>
+      <h3>1 · Starting mask</h3>
+      <div class="seg method" id="selectionMethod" role="group" aria-label="Selection method"></div>
+      <div class="note">Enable more than one source to combine their evidence.</div>
+    </section>
+
+    <section id="autoProps">
+      <h3>Auto object settings</h3>
+      <div class="seg" id="modelQuality" role="group" aria-label="Automatic segmentation model"></div>
+      <h3>Mask hypothesis</h3>
+      <div class="seg" id="extent" role="group" aria-label="Automatic mask extent">
+        <button data-extent="tight" aria-pressed="false" data-tip="The smallest valid mask returned by SAM">Tight</button>
+        <button data-extent="suggested" aria-pressed="true" data-tip="The mask with SAM's highest predicted quality">Suggested</button>
+        <button data-extent="broad" aria-pressed="false" data-tip="The largest valid mask returned by SAM">Broad</button>
+      </div>
+      <div class="note"><strong>Ctrl/Cmd+click</strong> adds a keep point. <strong>Alt+click</strong> adds an exclusion point to refine the active auto mask.</div>
+    </section>
+
+    <section id="fillProps" hidden>
+      <h3>Color fill settings</h3>
+      <label>threshold <span class="v" id="fillThresholdV">18</span>
+        <input id="fillThreshold" type="range" min="0" max="100" value="18"
+          aria-label="Color fill threshold" data-tip="Higher values cross larger color differences" /></label>
+    </section>
+
+    <section id="radiusProps" hidden>
+      <h3>Radius settings</h3>
+      <label>size <span class="v" id="screenRadiusV">5.0%</span>
+        <input id="screenRadius" type="range" min="1" max="30" value="5" step="0.5"
+          aria-label="Screen selection radius" data-tip="Radius as a percentage of the shorter view dimension" /></label>
+    </section>
+
+    <section id="fusionProps" hidden>
+      <h3>2 · Combine starting masks</h3>
+      <div class="seg" id="fusionMode" role="group" aria-label="Mask combination">
+        <button data-fusion="smart" aria-pressed="true"
+          data-tip="Keep pixels supported by a majority of enabled sources">Consensus</button>
+        <button data-fusion="union" aria-pressed="false"
+          data-tip="Keep pixels selected by any enabled source">Union</button>
+        <button data-fusion="intersection" aria-pressed="false"
+          data-tip="Keep only pixels selected by every enabled source">Common</button>
+      </div>
+    </section>
+
+    <section>
+      <h3>3 · Edit border</h3>
+      <div class="seg" id="borderMode" role="group" aria-label="Border editing mode">
+        <button data-edit="off" aria-pressed="true" data-tip="Navigate and select normally">Off</button>
+        <button data-edit="add" aria-pressed="false" data-tip="Paint pixels into the selection">Add</button>
+        <button data-edit="remove" aria-pressed="false" data-tip="Paint pixels out of the selection">Remove</button>
+      </div>
+      <label>brush size <span class="v" id="edgeBrushV">2.0%</span>
+        <input id="edgeBrush" type="range" min="0.3" max="12" value="2" step="0.1"
+          aria-label="Border editing brush size" data-tip="Brush diameter as a percentage of the shorter view dimension" /></label>
+      <div class="row">
+        <button id="undoStroke" data-tip="Undo the most recent border stroke">Undo stroke</button>
+        <button id="resetBorder" data-tip="Remove all manual border edits from this preview">Reset edits</button>
+      </div>
+      <div class="note"><kbd>B</kbd> add · <kbd>X</kbd> swap add/remove · <kbd>Alt</kbd> temporarily inverts the brush · <kbd>Ctrl/Cmd</kbd>+<kbd>Z</kbd> undo</div>
+    </section>
+
+    <section>
+      <h3>4 · Complete into 3D</h3>
+      <label>surface tolerance <span class="v" id="slackV">0.6%</span>
+        <input id="slack" type="range" min="1" max="60" value="6"
+          aria-label="Surface depth tolerance" data-tip="How far behind the visible surface a splat can be and still seed the selection" /></label>
+      <label>neighbor radius <span class="v" id="radiusV">0.8%</span>
+        <input id="radius" type="range" min="0" max="40" value="8"
+          aria-label="3D neighbor radius" data-tip="Maximum distance for growing from one selected splat to a neighbor" /></label>
+      <label>grow passes <span class="v" id="stepsV">24</span>
+        <input id="steps" type="range" min="0" max="80" value="24"
+          aria-label="3D grow passes" data-tip="More passes reach farther through the object; fewer passes reduce leakage" /></label>
+      <div id="selectionMeta">waiting for mask</div>
+    </section>
+
+    <section>
+      <h3>5 · Confirm</h3>
+      <div class="row commit">
+        <button id="undoPreview" data-tip="Restore the selection exactly as it was before this click">Undo preview</button>
+        <button id="keepPreview" data-tip="Keep this result and return to one-click selection">Keep result</button>
+      </div>
+    </section>
+  </aside>
+
+  <aside id="projectionPip" data-stale="true" aria-label="Frozen 2D projection preview">
+    <header><b>2D projection</b><span id="projectionStatus">waiting for scene</span></header>
+    <div id="projectionViewport">
+      <canvas id="projectionCanvas"></canvas>
+      <span id="projectionEmpty">no encoded view yet</span>
+    </div>
+    <footer>
+      <span><i class="mask"></i>2D mask</span>
+      <span><i class="seed"></i>visible splats</span>
+    </footer>
+  </aside>
+
+  <script type="module" src="/main.js"></script>
+</body>
+</html>
