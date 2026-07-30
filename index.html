@@ -599,7 +599,7 @@
   }
   #scanTray {
     position: fixed; z-index: 10; top: 10px; left: 50%;
-    width: min(650px, calc(100vw - 690px)); min-width: 260px;
+    width: min(330px, calc(100vw - 690px)); min-width: 260px;
     transform: translateX(-50%);
     color: #8aa4a8; font: 7px var(--mono); pointer-events: none;
   }
@@ -615,47 +615,58 @@
   #scanTray[data-state="tracking"] header b,
   #scanTray[data-state="fusing"] header b { color: #70d7ff; }
   .scan-tray-track {
-    display: flex; justify-content: center; gap: 4px; overflow: hidden;
-    min-height: 66px; padding: 3px 2px 0;
-    mask-image: linear-gradient(90deg, transparent, #000 4%, #000 96%, transparent);
+    display: grid; place-items: start center; overflow: visible;
+    min-height: 84px; padding: 5px 2px 0;
   }
   .scan-view-card {
-    position: relative; flex: 0 0 104px; height: 62px; overflow: hidden;
-    background: #03060866; box-shadow: inset 0 0 0 1px #6dd8d414;
-    opacity: .72; transition: opacity .2s ease, filter .2s ease;
+    position: relative; width: 286px; min-height: 76px;
+    opacity: .94; transition: opacity .2s ease, filter .2s ease;
   }
-  .scan-view-card canvas {
-    position: absolute; inset: 0; width: 100%; height: 100%;
+  .scan-view-pair {
+    display: flex; align-items: center; justify-content: center;
+    min-height: 76px; isolation: isolate;
   }
-  .scan-view-image { opacity: .66; transition: opacity .32s ease, filter .32s ease; }
+  .scan-view-frame {
+    position: relative; flex: 0 0 132px; width: 132px; height: 76px;
+    overflow: hidden; background: #030608;
+    box-shadow: inset 0 0 0 1px #6dd8d42e, 0 5px 16px #0007;
+  }
+  .scan-view-frame canvas { display: block; width: 100%; height: 100%; }
+  .scan-view-rgb {
+    z-index: 1; animation: scan-rgb-enter .22s ease-out both;
+  }
+  .scan-view-image { opacity: .78; }
+  .scan-view-mask-frame {
+    z-index: 2; margin-left: -10px;
+    background:
+      linear-gradient(#061217d9, #020709ed),
+      repeating-linear-gradient(0deg, transparent 0 5px, #70d7ff0a 5px 6px);
+    animation: scan-mask-slide .32s cubic-bezier(.2,.75,.25,1) both;
+  }
   .scan-view-mask {
-    opacity: 0; mix-blend-mode: screen;
-    filter: drop-shadow(0 0 3px #70d7ff);
-    transition: opacity .22s ease;
+    opacity: .86; filter: drop-shadow(0 0 3px #70d7ff);
   }
-  .scan-view-card[data-state="tracked"] .scan-view-mask,
-  .scan-view-card[data-state="uncertain"] .scan-view-mask,
-  .scan-view-card[data-state="fusing"] .scan-view-mask { opacity: .82; }
-  .scan-view-card[data-state="tracked"] { opacity: .94; }
-  .scan-view-card[data-state="uncertain"] { box-shadow: inset 0 0 0 1px #f2c14e55; }
-  .scan-view-card[data-state="fusing"] .scan-view-image {
-    opacity: 0; filter: blur(5px);
+  .scan-view-card[data-state="uncertain"] .scan-view-mask-frame {
+    box-shadow: inset 0 0 0 1px #f2c14e77, 0 5px 16px #0007;
   }
-  .scan-view-card[data-state="fusing"] .scan-view-mask {
-    opacity: 1; animation: scan-mask-release .9s ease forwards;
+  .scan-view-card[data-state="fusing"] .scan-view-rgb {
+    opacity: .36; filter: saturate(.35);
   }
-  .scan-view-card[data-state="skipped"] { opacity: .22; filter: grayscale(1); }
-  .scan-view-card > div {
-    position: absolute; z-index: 2; left: 4px; right: 4px; bottom: 3px;
+  .scan-view-card[data-state="fusing"] .scan-view-mask-frame {
+    box-shadow: inset 0 0 0 1px #70d7ff88, 0 0 14px #70d7ff36;
+  }
+  .scan-view-card[data-state="skipped"] { opacity: .28; filter: grayscale(1); }
+  .scan-view-caption {
+    position: absolute; z-index: 3; left: 14px; right: 14px; bottom: 3px;
     display: flex; justify-content: space-between; gap: 3px;
     color: #c6d5d5; text-shadow: 0 1px 4px #000, 0 0 4px #000;
     white-space: nowrap;
   }
-  .scan-view-card > div b {
+  .scan-view-caption b {
     min-width: 0; overflow: hidden; text-overflow: ellipsis;
     font-size: 6px; font-weight: 500; text-transform: uppercase;
   }
-  .scan-view-card > div span { color: #70d7ff; font-size: 6px; }
+  .scan-view-caption span { color: #70d7ff; font-size: 6px; }
   .scan-particle-layer {
     position: fixed; z-index: 15; inset: 0; pointer-events: none; overflow: hidden;
   }
@@ -664,9 +675,16 @@
     border-radius: 50%; background: #91f4ff;
     box-shadow: 0 0 5px #70d7ff, 0 0 10px #70d7ff99;
   }
-  @keyframes scan-mask-release {
-    0%, 42% { opacity: 1; filter: drop-shadow(0 0 4px #70d7ff); }
-    100% { opacity: 0; filter: blur(2px) drop-shadow(0 0 8px #70d7ff); }
+  @keyframes scan-rgb-enter {
+    from { opacity: 0; transform: translateX(-18px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+  @keyframes scan-mask-slide {
+    from { opacity: 0; transform: translateX(-34px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .scan-view-rgb, .scan-view-mask-frame { animation-duration: .01ms; }
   }
   #changeDiffHud {
     position: fixed; z-index: 11; top: min(300px, 38vh); right: 342px;
@@ -918,7 +936,7 @@
       <b>All-sides scan</b>
       <span data-scan-status>Generating views · 0 / 0</span>
     </header>
-    <div class="scan-tray-track" data-scan-track></div>
+    <div class="scan-tray-track" data-scan-track aria-live="polite"></div>
   </section>
 
   <div id="ui">

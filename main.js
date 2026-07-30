@@ -63,6 +63,14 @@ import {
   fuseViewEvidence,
   updateTimingAverage,
 } from './multiviewRefinement.js';
+import {
+  assertSelectionFrame,
+  capturePointToMask,
+  clientPointToCapture,
+  createSelectionFrame,
+  framebufferPointToCapture,
+  viewMatricesMatch,
+} from './selectionFrame.js';
 
 const SAM_INPUT_MAX = 1024; // longest side handed to the encoder
 const SAM_TRACKING_NATIVE = 832; // browser capture; SAM 3.1 resizes internally
@@ -532,6 +540,7 @@ ui.qualityFilterToggle.addEventListener('click', (event) => {
   if (!state.splat || !state.sceneQuality.available) return;
   state.sceneQuality.enabled = !state.sceneQuality.enabled;
   state.splat.setQualityFilterEnabled(state.sceneQuality.enabled);
+  sceneContentRevision++;
   ui.qualityFilterToggle.setAttribute('aria-pressed', String(state.sceneQuality.enabled));
   ui.qualityFilterToggle.textContent = state.sceneQuality.enabled ? 'Clean view on' : 'Clean view';
   setStatus(
@@ -963,6 +972,7 @@ function updateDockVisibilityMask() {
     for (const index of state.nearbyContext.hidden) hidden.add(index);
   }
   state.splat.setHiddenSplats(hidden);
+  sceneContentRevision++;
 }
 
 function rebuildNearbyContextMask() {
@@ -1239,10 +1249,10 @@ function restoreDockSegment(segmentId, { openInspector = false } = {}) {
   });
 }
 
-function showRecentlyAdded(indices) {
+function showRecentlyAdded(indices, { render = true } = {}) {
   clearTimeout(recentSelectionTimer);
   state.recentlyAdded = new Set(indices);
-  renderSelectionState();
+  if (render) renderSelectionState();
   if (!state.recentlyAdded.size) return;
   recentSelectionTimer = setTimeout(() => {
     state.recentlyAdded.clear();
@@ -1812,6 +1822,8 @@ async function runObjectSuggestions(revision) {
   if (state.exploration || !state.objectSuggestionsEnabled || !state.encoded
     || state.active || state.multiview.session
     || revision !== viewRevision || !capture.width) return;
+  const frame = state.frozen?.frame;
+  if (!frame || frame.viewRevision !== revision) return;
 
   // Transformers.js model setup and inference share the same browser GPU.
   // Running YOLO while SAM is compiling/encoding makes both dramatically
@@ -1857,7 +1869,8 @@ async function runObjectSuggestions(revision) {
           `${event?.status === 'progress' ? 'Downloading detector' : 'Preparing detector'}${percent}`,
         );
       });
-      if (run !== objectSuggestionRun || revision !== viewRevision || !state.encoded
+      if (run !== objectSuggestionRun || revision !== viewRevision
+        || state.frozen?.frame !== frame || !state.encoded
         || state.active || state.multiview.session) return;
     }
 
@@ -1884,6 +1897,7 @@ async function runObjectSuggestions(revision) {
       },
     });
     if (run !== objectSuggestionRun || revision !== viewRevision
+      || state.frozen?.frame !== frame
       || !state.encoded || !state.objectSuggestionsEnabled
       || state.active || state.multiview.session) return;
     objectSuggestionRevision = revision;
@@ -1902,7 +1916,7 @@ async function runObjectSuggestions(revision) {
         ? `${proposals.length} recognizable region${proposals.length === 1 ? '' : 's'} cached for this view`
         : 'No recognized YOLO classes in this view; edge-aware visual-region hints remain available.',
     );
-    runRefinedObjectSuggestions(revision, contentRegion);
+    runRefinedObjectSuggestions(revision, contentRegion, frame);
   } catch (error) {
     if (run !== objectSuggestionRun || revision !== viewRevision) return;
     console.warn('[detector] object hints unavailable', error);
@@ -1920,19 +1934,26 @@ async function runObjectSuggestions(revision) {
   }
 }
 
-async function runRefinedObjectSuggestions(revision, contentRegion) {
+async function runRefinedObjectSuggestions(
+  revision,
+  contentRegion,
+  frame = state.frozen?.frame,
+) {
   if (state.exploration || state.active || state.multiview.session
-    || !state.objectSuggestionsEnabled || revision !== viewRevision) return;
+    || !state.objectSuggestionsEnabled || revision !== viewRevision
+    || !frame || state.frozen?.frame !== frame) return;
   const run = ++refinedObjectSuggestionRun;
   refinedSuggestionInferenceRunning = true;
   try {
     await refinedObjectDetector.load();
     if (run !== refinedObjectSuggestionRun || revision !== viewRevision
+      || state.frozen?.frame !== frame
       || state.active || state.multiview.session || !state.encoded) return;
     const proposals = await refinedDetectionPipeline.detect(capture, {
       contentRegion,
     });
     if (run !== refinedObjectSuggestionRun || revision !== viewRevision
+      || state.frozen?.frame !== frame
       || state.active || state.multiview.session || !state.encoded) return;
     objectSuggestions = consolidateObjectProposals([
       ...proposals,
@@ -1986,6 +2007,19 @@ function updateObjectSuggestionHover(event) {
     || classicRegionProposer.revision !== viewRevision) {
     clearTimeout(classicSuggestionTimer);
     clearHoveredObjectSuggestion();
+    return;
+  }
+  camera.updateMatrixWorld(true);
+  if (!state.frozen?.frame
+    || !viewMatricesMatch(
+      state.frozen.frame.camera.viewMatrix,
+      camera.matrixWorldInverse.elements,
+    )) {
+    clearHoveredObjectSuggestion();
+    markViewDirty({
+      force: true,
+      detail: 'The camera changed · refreshing object hints for this view.',
+    });
     return;
   }
   const rect = renderer.domElement.getBoundingClientRect();
@@ -2251,8 +2285,7 @@ function renderProjectionPreview({
   }
 
   if (state.showProjectionSeeds && proj && seeds?.length && state.frozen) {
-    const sourceScaleX = capture.width / state.frozen.viewW;
-    const sourceScaleY = capture.height / state.frozen.viewH;
+    const frame = state.frozen.frame;
     const displayScaleX = out.width / crop.w;
     const displayScaleY = out.height / crop.h;
     // Dense scenes can produce tens of thousands of seeds. A representative
@@ -2261,8 +2294,11 @@ function renderProjectionPreview({
     projectionCtx.fillStyle = 'rgba(88, 214, 168, 0.9)';
     for (let n = 0; n < seeds.length; n += stride) {
       const i = seeds[n];
-      const x = (proj.sx[i] * sourceScaleX - crop.x) * displayScaleX;
-      const y = (proj.sy[i] * sourceScaleY - crop.y) * displayScaleY;
+      const slot = projectionSlot(proj, i);
+      if (slot < 0) continue;
+      const point = framebufferPointToCapture(frame, proj.sx[slot], proj.sy[slot]);
+      const x = (point.x - crop.x) * displayScaleX;
+      const y = (point.y - crop.y) * displayScaleY;
       if (x < 0 || y < 0 || x >= out.width || y >= out.height) continue;
       projectionCtx.fillRect(x - 1, y - 1, 2, 2);
     }
@@ -2325,7 +2361,8 @@ function projectionEventPoint(event) {
   const crop = projectionDisplayCrop;
   const out = ui.projectionCanvas;
   const rect = out.getBoundingClientRect();
-  if (!active?.currentMask || !crop || !rect.width || !rect.height) return null;
+  if (!active?.currentMask || active.frame !== state.frozen?.frame
+    || !crop || !rect.width || !rect.height) return null;
 
   const imageAspect = out.width / Math.max(1, out.height);
   const boxAspect = rect.width / Math.max(1, rect.height);
@@ -2347,11 +2384,19 @@ function projectionEventPoint(event) {
   const v = (event.clientY - top) / height;
   const captureX = crop.x + u * crop.w;
   const captureY = crop.y + v * crop.h;
+  const maskPoint = capturePointToMask(
+    active.frame,
+    captureX,
+    captureY,
+    active.maskW,
+    active.maskH,
+  );
+  if (!maskPoint) return null;
   return {
     captureX,
     captureY,
-    maskX: captureX * active.maskW / capture.width,
-    maskY: captureY * active.maskH / capture.height,
+    maskX: maskPoint.x,
+    maskY: maskPoint.y,
     contentWidth: width,
     contentHeight: height,
   };
@@ -2410,12 +2455,16 @@ function findProjectionDisplayCrop() {
 
   const xs = [];
   const ys = [];
-  const sourceScaleX = capture.width / frozen.viewW;
-  const sourceScaleY = capture.height / frozen.viewH;
   for (const index of projection.nearestIndex) {
-    if (index < 0 || projection.sd[index] <= 0) continue;
-    xs.push(projection.sx[index] * sourceScaleX);
-    ys.push(projection.sy[index] * sourceScaleY);
+    const slot = projectionSlot(projection, index);
+    if (slot < 0 || projection.sd[slot] <= 0) continue;
+    const point = framebufferPointToCapture(
+      frozen.frame,
+      projection.sx[slot],
+      projection.sy[slot],
+    );
+    xs.push(point.x);
+    ys.push(point.y);
   }
   if (xs.length < 16) {
     projectionCropRevision = viewRevision;
@@ -2573,7 +2622,7 @@ function dismissActiveSelection({ hideInspector = true, preserveActive = false }
  * canvas — getImageData throws IndexSizeError, and because runEncode had no
  * catch, state.busy stayed true and every later encode and click was blocked.
  */
-function captureSceneFrame(targetCanvas, targetContext) {
+function captureSceneFrame(targetCanvas, targetContext, targetCamera = camera) {
   const src = renderer.domElement;
   if (!src.width || !src.height) throw new Error('render target has no size');
   const scale = Math.min(1, SAM_INPUT_MAX / Math.max(src.width, src.height));
@@ -2603,6 +2652,7 @@ function captureSceneFrame(targetCanvas, targetContext) {
   const hl = state.highlight?.points;
   const wasVisible = hl?.visible;
   const wasDockVisible = segmentDock.root.visible;
+  const wasSplatVisible = state.splat?.object3D.visible;
   const previousTarget = renderer.getRenderTarget();
   const previousClearColor = renderer.getClearColor(new THREE.Color());
   const previousClearAlpha = renderer.getClearAlpha();
@@ -2618,15 +2668,19 @@ function captureSceneFrame(targetCanvas, targetContext) {
     // previous path briefly exposed an empty/intermediate Gaussian frame to
     // the user whenever selection encoding ran.
     state.splat.object3D.visible = true;
+    // Render-target viewport values are already physical pixels. Calling the
+    // renderer-level setter here applies the display pixel ratio on high-DPI
+    // screens and crops the model image away from the cockpit coordinate frame.
+    currentViewReadback.target.viewport.set(0, 0, width, height);
+    currentViewReadback.target.scissor.set(0, 0, width, height);
+    currentViewReadback.target.scissorTest = false;
+    currentViewReadback.target.texture.colorSpace = renderer.outputColorSpace;
     renderer.setRenderTarget(currentViewReadback.target);
-    renderer.setViewport(0, 0, width, height);
-    renderer.setScissor(0, 0, width, height);
-    renderer.setScissorTest(false);
     renderer.setClearColor(0x000000, 1);
     renderer.autoClear = false;
     renderer.clear(true, true, true);
-    state.splat?.update(renderer, camera);
-    renderer.render(scene, camera);
+    state.splat?.update(renderer, targetCamera);
+    renderer.render(scene, targetCamera);
     renderer.readRenderTargetPixels(
       currentViewReadback.target,
       0,
@@ -2657,6 +2711,7 @@ function captureSceneFrame(targetCanvas, targetContext) {
     renderer.autoClear = previousAutoClear;
     if (hl) hl.visible = wasVisible;
     segmentDock.root.visible = wasDockVisible;
+    if (state.splat) state.splat.object3D.visible = wasSplatVisible;
     state.splat?.setEncodingRipple(
       encodingRippleFrame.strength,
       encodingRippleFrame.phase,
@@ -2666,6 +2721,7 @@ function captureSceneFrame(targetCanvas, targetContext) {
 }
 
 let viewRevision = 0;
+let sceneContentRevision = 0;
 let encodeTimer = 0;
 let encodeRunning = false;
 let encodeQueued = false;
@@ -2787,13 +2843,10 @@ async function runEncode() {
   setStatus('encoding view…', 'busy');
   setSelectionReadiness('encoding', 'Freezing this camera view and preparing selection features.');
   const revision = viewRevision;
+  const contentRevision = sceneContentRevision;
   const splat = state.splat;
 
   try {
-    camera.updateMatrixWorld();
-    const viewProj = new THREE.Matrix4()
-      .multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-
     setWork({
       key: `encode-${revision}`,
       state: 'busy',
@@ -2803,10 +2856,20 @@ async function runEncode() {
       active: 1,
     });
     await nextFrame();
-    if (revision !== viewRevision || splat !== state.splat) {
+    if (revision !== viewRevision || contentRevision !== sceneContentRevision
+      || splat !== state.splat) {
       throw new DOMException('Capture superseded', 'AbortError');
     }
-    doCapture();
+    // Capture and projection must use one camera clone. Reading matrices before
+    // the awaited paint and RGB from the live camera afterward allowed rare
+    // one-frame disagreements between the click, SAM prompt and Gaussian lift.
+    const captureCamera = camera.clone();
+    captureCamera.updateMatrixWorld(true);
+    const viewProj = new THREE.Matrix4().multiplyMatrices(
+      captureCamera.projectionMatrix,
+      captureCamera.matrixWorldInverse,
+    );
+    doCapture(captureCamera);
     renderProjectionPreview({ label: 'encoding view…', stale: true });
     setWork({
       key: `encode-${revision}`,
@@ -2827,16 +2890,62 @@ async function runEncode() {
       opacity: splat.opacity,
     }, (progress) => {
       updateWorkDetail('view', `Caching projected positions · ${Math.round(progress * 100)}%`);
-    }, () => revision !== viewRevision || splat !== state.splat);
+    }, () => revision !== viewRevision || contentRevision !== sceneContentRevision
+      || splat !== state.splat);
 
-    state.frozen = {
-      viewProj: viewProj.elements.slice(),
-      viewMatrix: camera.matrixWorldInverse.elements.slice(),
+    const viewport = renderer.domElement.getBoundingClientRect();
+    const displayCrop = findRenderedContentCrop() ?? {
+      x: 0,
+      y: 0,
+      w: capture.width,
+      h: capture.height,
+    };
+    const frame = createSelectionFrame({
+      viewRevision: revision,
+      sceneRevision: contentRevision,
+      viewMatrix: captureCamera.matrixWorldInverse.elements,
+      projectionMatrix: captureCamera.projectionMatrix.elements,
+      viewProjectionMatrix: viewProj.elements,
+      framebuffer: {
+        width: renderer.domElement.width,
+        height: renderer.domElement.height,
+      },
+      capture: {
+        width: capture.width,
+        height: capture.height,
+      },
+      cssViewport: viewport,
+      crop: {
+        x: displayCrop.x,
+        y: displayCrop.y,
+        width: displayCrop.w,
+        height: displayCrop.h,
+      },
+      colorTransform: {
+        outputColorSpace: String(renderer.outputColorSpace),
+        toneMapping: String(renderer.toneMapping),
+        toneMappingExposure: renderer.toneMappingExposure,
+        alpha: 'opaque',
+      },
+      orientation: 'top-left',
+    });
+    state.frozen = Object.freeze({
+      frame,
+      viewProj: frame.camera.viewProjectionMatrix,
+      viewMatrix: frame.camera.viewMatrix,
       viewW: renderer.domElement.width,
       viewH: renderer.domElement.height,
       projection,
       revision,
+      sceneRevision: contentRevision,
+    });
+    projectionDisplayCrop = {
+      x: frame.crop.x,
+      y: frame.crop.y,
+      w: frame.crop.width,
+      h: frame.crop.height,
     };
+    projectionCropRevision = revision;
     state.encoded = true;
     setStatus('ready', 'ready');
     setSelectionReadiness('ready');
@@ -2858,7 +2967,8 @@ async function runEncode() {
     scheduleObjectSuggestions(revision);
     flushPendingSelection();
   } catch (err) {
-    if (err.name === 'AbortError' || revision !== viewRevision || splat !== state.splat) {
+    if (err.name === 'AbortError' || revision !== viewRevision
+      || contentRevision !== sceneContentRevision || splat !== state.splat) {
       state.encoded = false;
       setStatus('view changed…', 'busy');
       setSelectionReadiness('encoding', 'Discarded a stale result · waiting for the latest camera view.');
@@ -2889,6 +2999,8 @@ function scheduleModelViewEncoding(model, revision, splat, sourceCanvas) {
   if (state.exploration || !model?.ready || model.viewRevision === revision
     || revision !== viewRevision || splat !== state.splat
     || state.multiview.session) return;
+  const frame = state.frozen?.frame;
+  if (!frame || frame.viewRevision !== revision) return;
   const canvas = document.createElement('canvas');
   canvas.width = sourceCanvas.width;
   canvas.height = sourceCanvas.height;
@@ -2896,6 +3008,7 @@ function scheduleModelViewEncoding(model, revision, splat, sourceCanvas) {
   pendingModelViewEncode = {
     model,
     revision,
+    frame,
     splat,
     canvas,
   };
@@ -2917,7 +3030,8 @@ async function runPendingModelViewEncoding() {
       }
       const job = pendingModelViewEncode;
       pendingModelViewEncode = null;
-      if (!job.model.ready || job.revision !== viewRevision || job.splat !== state.splat) {
+      if (!job.model.ready || job.revision !== viewRevision || job.splat !== state.splat
+        || job.frame !== state.frozen?.frame) {
         continue;
       }
       setWork({
@@ -2930,7 +3044,8 @@ async function runPendingModelViewEncoding() {
       });
       try {
         await job.model.encode(job.canvas);
-        if (job.revision !== viewRevision || job.splat !== state.splat) continue;
+        if (job.revision !== viewRevision || job.splat !== state.splat
+          || job.frame !== state.frozen?.frame) continue;
         job.model.viewRevision = job.revision;
         completeWorkLane(
           'model',
@@ -3064,25 +3179,42 @@ renderer.domElement.addEventListener('pointerup', async (e) => {
   if (moved > 4) return;              // that was an orbit, not a click
   if (!state.splat || state.multiview.session || state.exploration) return;
   const rect = renderer.domElement.getBoundingClientRect();
+  const frozenFrame = state.frozen?.frame;
+  camera.updateMatrixWorld(true);
+  const cameraMatchesCapture = Boolean(frozenFrame && viewMatricesMatch(
+    frozenFrame.camera.viewMatrix,
+    camera.matrixWorldInverse.elements,
+  ));
+  const capturePoint = state.encoded && cameraMatchesCapture
+    ? clientPointToCapture(frozenFrame, e.clientX, e.clientY, rect)
+    : null;
+  if (state.encoded && (!capturePoint || !cameraMatchesCapture)) {
+    markViewDirty({
+      force: true,
+      detail: 'Camera or viewport changed · freezing the exact clicked view.',
+    });
+  }
   const intent = {
     x: (e.clientX - rect.left) / rect.width,
     y: (e.clientY - rect.top) / rect.height,
+    capturePoint,
+    frameId: capturePoint && cameraMatchesCapture ? frozenFrame.id : null,
     subtract: e.shiftKey,
-    suggestion: hoveredObjectSuggestion,
+    suggestion: cameraMatchesCapture ? hoveredObjectSuggestion : null,
     viewRevision,
   };
 
-  if (!state.encoded || state.busy) {
+  if (!state.encoded || !capturePoint || !cameraMatchesCapture || state.busy) {
     state.pendingSelection = intent;
     ui.encodingCursorLabel.textContent = 'queued';
     setWork({
       key: `queued-click-${viewRevision}`,
       state: 'queued',
-      title: 'Selection click queued',
+      title: 'Freezing the clicked view',
       detail: state.encoded
         ? `Waiting for ${state.busyReason || 'the current task'} to finish.`
-        : 'It will run automatically when this exact camera view is selectable.',
-      steps: state.encoded ? ['queued', 'mask', 'lift', 'grow'] : ['view', 'queued', 'mask', '3D'],
+        : 'The latest click will run when this exact projection is ready.',
+      steps: state.encoded ? ['wait', 'mask', 'lift', '3D'] : ['freeze view', 'mask', 'lift', '3D'],
       active: state.encoded ? 0 : 1,
     });
     return;
@@ -3102,11 +3234,55 @@ async function executeSelectionIntent(intent) {
     });
     return;
   }
+  let frame;
+  try {
+    frame = assertSelectionFrame(state.frozen?.frame, {
+      viewRevision,
+      sceneRevision: sceneContentRevision,
+      framebufferWidth: renderer.domElement.width,
+      framebufferHeight: renderer.domElement.height,
+    });
+  } catch (error) {
+    if (error.name !== 'AbortError') throw error;
+    setWork({
+      key: `stale-click-${viewRevision}`,
+      state: 'ready',
+      title: 'Queued click canceled',
+      detail: 'Scene or viewport changed before its frozen selection frame was ready.',
+    });
+    return;
+  }
+  if (intent.frameId && intent.frameId !== frame.id) {
+    setWork({
+      key: `stale-click-${viewRevision}`,
+      state: 'ready',
+      title: 'Queued click canceled',
+      detail: 'Its frozen image was replaced before selection started.',
+    });
+    return;
+  }
+  camera.updateMatrixWorld(true);
+  if (!viewMatricesMatch(
+    frame.camera.viewMatrix,
+    camera.matrixWorldInverse.elements,
+  )) {
+    markViewDirty({
+      force: true,
+      detail: 'Camera changed · refreshing the exact selection frame.',
+    });
+    state.pendingSelection = {
+      ...intent,
+      capturePoint: null,
+      frameId: null,
+      suggestion: null,
+      viewRevision,
+    };
+    return;
+  }
+  const px = intent.capturePoint?.x ?? intent.x * frame.capture.width;
+  const py = intent.capturePoint?.y ?? intent.y * frame.capture.height;
 
-  const px = intent.x * capture.width;
-  const py = intent.y * capture.height;
-
-  await beginSelection(px, py, intent.subtract, intent.suggestion);
+  await beginSelection(px, py, intent.subtract, intent.suggestion, frame);
 }
 
 function flushPendingSelection() {
@@ -3117,7 +3293,19 @@ function flushPendingSelection() {
   queueMicrotask(() => executeSelectionIntent(intent));
 }
 
-async function beginSelection(px, py, subtract, detectorSuggestion = null) {
+async function beginSelection(
+  px,
+  py,
+  subtract,
+  detectorSuggestion = null,
+  frame = state.frozen?.frame,
+) {
+  assertSelectionFrame(frame, {
+    viewRevision,
+    sceneRevision: sceneContentRevision,
+    framebufferWidth: renderer.domElement.width,
+    framebufferHeight: renderer.domElement.height,
+  });
   pushSelectionActionHistory(subtract ? 'Remove selected region' : 'Select object');
   setProjectionEditorOpen(false);
   const operationBaseSelection = subtract
@@ -3125,7 +3313,7 @@ async function beginSelection(px, py, subtract, detectorSuggestion = null) {
     : new Set();
   const operationBaseConfidence = subtract
     ? state.confidence.slice()
-    : new Float32Array(state.splat.count);
+    : null;
   const operationBaseProvisional = subtract
     ? new Set(state.provisional)
     : new Set();
@@ -3146,6 +3334,7 @@ async function beginSelection(px, py, subtract, detectorSuggestion = null) {
   state.active = {
     point: { x: px, y: py },
     viewRevision,
+    frame,
     prompts,
     detectorSuggestion,
     baseSelection: operationBaseSelection,
@@ -3186,6 +3375,18 @@ async function beginSelection(px, py, subtract, detectorSuggestion = null) {
 async function runActiveSelection() {
   const active = state.active;
   if (!active || !state.splat || !state.frozen) return;
+  try {
+    assertSelectionFrame(active.frame, {
+      viewRevision,
+      sceneRevision: sceneContentRevision,
+      framebufferWidth: renderer.domElement.width,
+      framebufferHeight: renderer.domElement.height,
+    });
+  } catch (error) {
+    if (error.name === 'AbortError') return;
+    throw error;
+  }
+  if (state.frozen.frame !== active.frame) return;
   if (state.busy) {
     clearTimeout(activeSelectionTimer);
     activeSelectionTimer = setTimeout(runActiveSelection, 80);
@@ -3217,12 +3418,14 @@ async function runActiveSelection() {
   try {
     const resolved = await Promise.all([...active.sources].map((sourceId) =>
       getSelectionSource(sourceId).resolve({
-        active,
+       active,
+        frame: active.frame,
         capture,
         settings: state,
         model: currentSam(),
       })));
-    if (state.active !== active || requestToken !== active.requestToken) return;
+    if (state.active !== active || requestToken !== active.requestToken
+      || state.frozen?.frame !== active.frame) return;
 
     setWork({
       key: `selection-${requestToken}`,
@@ -3344,7 +3547,17 @@ function applyClassicGuideConfidence(confidence, mask, w, h, candidates, fusion)
 
 async function applySelectionMask(active, mask, maskW, maskH, requestToken = active.requestToken) {
   const { splat, frozen } = state;
+  if (!frozen || frozen.frame !== active.frame) {
+    throw new DOMException('Selection frame superseded', 'AbortError');
+  }
+  assertSelectionFrame(active.frame, {
+    viewRevision,
+    sceneRevision: sceneContentRevision,
+    framebufferWidth: renderer.domElement.width,
+    framebufferHeight: renderer.domElement.height,
+  });
   const scale = splat.scale;
+  const visibleSideStartedAt = performance.now();
 
   setWork({
     key: `selection-${requestToken}`,
@@ -3383,6 +3596,7 @@ async function applySelectionMask(active, mask, maskW, maskH, requestToken = act
     active.liftCache = lifted;
   }
   const { seeds, proj } = lifted;
+  const liftElapsed = performance.now() - visibleSideStartedAt;
 
   renderProjectionPreview({
     mask,
@@ -3399,10 +3613,14 @@ async function applySelectionMask(active, mask, maskW, maskH, requestToken = act
   setWork({
     key: `selection-${requestToken}`,
     state: 'busy',
-    title: 'Finishing the visible side',
-    detail: `${seeds.length.toLocaleString()} visible splats mapped`,
-    steps: ['find area', 'map visible side', 'finish visible side'],
-    active: 3,
+    title: seeds.length >= 1_500
+      ? 'Checking the visible selection'
+      : 'Closing small gaps in the visible side',
+    detail: `${seeds.length.toLocaleString()} visible splats mapped in ${
+      liftElapsed < 1000 ? `${Math.round(liftElapsed)}ms` : formatDuration(liftElapsed)
+    }`,
+    steps: ['find area', 'map visible side', 'check result', 'preview'],
+    active: 2,
   });
   await nextFrame();
   if (state.active !== active || requestToken !== active.requestToken) {
@@ -3413,9 +3631,9 @@ async function applySelectionMask(active, mask, maskW, maskH, requestToken = act
   // neighborhood search from tens of thousands of seeds repeats the same
   // dense-cell queries and can take minutes. Only bridge sparse masks here;
   // hidden geometry is deliberately left to the multiview tracker.
-  const bridgeSteps = seeds.length >= 8_000
+  const bridgeSteps = seeds.length >= 1_500
     ? 0
-    : seeds.length >= 2_000
+    : seeds.length >= 300
       ? Math.min(1, state.steps)
       : Math.min(2, state.steps);
   const growRadius = Math.min(state.radius, 0.004) * scale;
@@ -3423,6 +3641,12 @@ async function applySelectionMask(active, mask, maskW, maskH, requestToken = act
   let growCache = active.growCache;
   if (!growCache || growCache.lifted !== lifted || growCache.radius !== growRadius
     || growCache.steps !== bridgeSteps || growCache.depthBand !== depthBand) {
+    if (!bridgeSteps) {
+      updateWorkDetail(
+        'selection',
+        `${seeds.length.toLocaleString()} visible splats mapped · dense mask, no gap search needed`,
+      );
+    }
     const region = await growAsync({
       grid: state.grid,
       centers: splat.centers,
@@ -3462,10 +3686,10 @@ async function applySelectionMask(active, mask, maskW, maskH, requestToken = act
   setWork({
     key: `selection-${requestToken}`,
     state: 'busy',
-    title: 'Finishing the object preview',
-    detail: 'Separating strong matches from parts that still need review.',
-    steps: ['find area', 'visible side', 'hidden depth', 'finish'],
-    active: 3,
+    title: 'Checking visible matches',
+    detail: `${growCache.region.size.toLocaleString()} visible splats to score`,
+    steps: ['find area', 'map visible side', 'check result', 'preview'],
+    active: 2,
   });
   const refined = await refineSelectionAsync({
     region: growCache.region,
@@ -3495,6 +3719,18 @@ async function applySelectionMask(active, mask, maskW, maskH, requestToken = act
   if (state.active !== active || requestToken !== active.requestToken) {
     throw new DOMException('Selection superseded', 'AbortError');
   }
+  setWork({
+    key: `selection-${requestToken}`,
+    state: 'busy',
+    title: 'Updating the 3D preview',
+    detail: `${refined.selection.size.toLocaleString()} splats in the current object`,
+    steps: ['find area', 'map visible side', 'check result', 'preview'],
+    active: 3,
+  });
+  await nextFrame();
+  if (state.active !== active || requestToken !== active.requestToken) {
+    throw new DOMException('Selection superseded', 'AbortError');
+  }
   for (const index of state.manualExcluded) {
     refined.selection.delete(index);
     refined.provisional.delete(index);
@@ -3515,7 +3751,7 @@ async function applySelectionMask(active, mask, maskW, maskH, requestToken = act
   );
   rebuildProvisionalState();
   active.lastRefinement = refined;
-  showRecentlyAdded(newlyIncluded);
+  showRecentlyAdded(newlyIncluded, { render: !active.controlDiff });
   publishControlDiff(active, mask);
   let maskPixels = 0;
   for (const value of mask) maskPixels += value;
@@ -3602,6 +3838,7 @@ async function loadSplatInner(url, filename, loadId) {
   // clearing state.encoded is insufficient: an in-flight encode could finish
   // later and publish the old camera snapshot as current.
   viewRevision++;
+  sceneContentRevision++;
   clearTimeout(encodeTimer);
   clearObjectSuggestions();
 
@@ -3832,8 +4069,8 @@ async function autoLoadDevelopmentPly() {
   }
 }
 
-function doCapture() {
-  captureSceneFrame(capture, captureCtx);
+function doCapture(targetCamera = camera) {
+  captureSceneFrame(capture, captureCtx, targetCamera);
 }
 
 autoLoadDevelopmentPly();
@@ -4959,13 +5196,13 @@ async function startMultiviewRefinement() {
   // The backend now owns the complete ordered sequence. Keep only the key
   // frames used by the review UI; bridge frames must not remain resident for
   // the rest of the scan.
+  session.trackingStaged = Boolean(branchFrames?.size);
   session.stagedPoseFrames.clear();
   branchFrames.clear();
   session.diagnostics.memory.retainedFrameBytes = uniqueBlobBytes(
     session.stagedFrames.values(),
   );
   session.providerMode = 'temporal-tracker';
-  session.trackingStaged = Boolean(branchFrames?.size);
   session.providerLabel = 'SAM 3.1 temporal tracking';
   await processNextMultiviewView(session);
 }
@@ -4999,9 +5236,24 @@ async function processNextMultiviewView(session) {
     });
     applyViewToCamera(view, refinementCamera);
     const stagedFrame = session.stagedFrames.get(view.id);
-    const rendered = stagedFrame
-      ? await drawStagedTrackingFrame(stagedFrame, view)
-      : await captureRefinementView(session, view, refinementCamera);
+    let rendered;
+    if (stagedFrame) {
+      try {
+        rendered = await drawStagedTrackingFrame(stagedFrame, view);
+      } finally {
+        // ScanTray already owns a tiny canvas copy. Drop this native-resolution
+        // JPEG as soon as its FIFO view becomes active so completed views cannot
+        // accumulate another full orbit of host memory.
+        session.stagedFrames.delete(view.id);
+        if (session.diagnostics.memory) {
+          session.diagnostics.memory.retainedFrameBytes = uniqueBlobBytes(
+            session.stagedFrames.values(),
+          );
+        }
+      }
+    } else {
+      rendered = await captureRefinementView(session, view, refinementCamera);
+    }
     if (session.canceled) return;
     renderFinishedAt = performance.now();
 
@@ -5864,10 +6116,11 @@ async function captureRefinementView(session, view, targetCamera) {
     }
 
     const renderStartedAt = performance.now();
+    target.viewport.set(0, 0, width, height);
+    target.scissor.set(0, 0, width, height);
+    target.scissorTest = false;
+    target.texture.colorSpace = renderer.outputColorSpace;
     renderer.setRenderTarget(target);
-    renderer.setViewport(0, 0, width, height);
-    renderer.setScissor(0, 0, width, height);
-    renderer.setScissorTest(false);
     renderer.autoClear = false;
     renderer.setClearColor(0x000000, 1);
     renderer.clear(true, true, true);

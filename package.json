@@ -9,6 +9,9 @@
     "tracker": ".runtime\\sam3-service-venv\\Scripts\\python.exe -m uvicorn tracking_service.app:app --host 127.0.0.1 --port 8091",
     "test:cutout": "node scripts/test-cutout-buffer.mjs",
     "test:projection-roi": "node scripts/test-projection-roi.mjs",
+    "test:mask-abort": "node scripts/test-mask-propagation-abort.mjs",
+    "test:scan-coordinator": "node scripts/test-scan-coordinator.mjs",
+    "test:selection-frame": "node scripts/test-selection-frame.mjs",
     "build": "vite build",
     "preview": "vite preview"
   },

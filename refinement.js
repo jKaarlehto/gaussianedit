@@ -171,10 +171,12 @@ export async function refineSelectionAsync({
       confidence[index] = Math.max(confidence[index], candidates.get(index) ?? minimumConfidence);
     }
   }
-  for (let i = 0; i < locked?.length; i++) {
-    if (!locked[i]) continue;
-    selection.add(i);
-    confidence[i] = Math.max(confidence[i], confirmConfidence);
+  // Locked Gaussians are already members of the active selection. Iterating
+  // the entire 8–10M lock bitmap made a small visible-side lift scale with the
+  // whole scene for no semantic benefit.
+  for (const index of selection) {
+    if (!locked?.[index]) continue;
+    confidence[index] = Math.max(confidence[index], confirmConfidence);
   }
 
   const provisional = new Set();

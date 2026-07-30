@@ -2,6 +2,7 @@ import * as THREE from 'three';
 
 const MAX_PREVIEW_POINTS = 180_000;
 const MAX_CONTEXT_POINTS = 42_000;
+const MAX_CONTEXT_CELL_VISITS = 90_000;
 
 /**
  * A lightweight, isolated view of the selected splats rendered into a
@@ -769,11 +770,16 @@ function collectContextIndices({
   const ix1 = clampCell(Math.floor((maxX - grid.minX) / grid.cell), grid.nx);
   const iy1 = clampCell(Math.floor((maxY - grid.minY) / grid.cell), grid.ny);
   const iz1 = clampCell(Math.floor((maxZ - grid.minZ) / grid.cell), grid.nz);
+  const cellCount = (ix1 - ix0 + 1) * (iy1 - iy0 + 1) * (iz1 - iz0 + 1);
+  const cellStep = Math.max(
+    1,
+    Math.ceil(Math.cbrt(cellCount / MAX_CONTEXT_CELL_VISITS)),
+  );
 
   let candidateCount = 0;
-  for (let iz = iz0; iz <= iz1; iz++) {
-    for (let iy = iy0; iy <= iy1; iy++) {
-      for (let ix = ix0; ix <= ix1; ix++) {
+  for (let iz = iz0; iz <= iz1; iz += cellStep) {
+    for (let iy = iy0; iy <= iy1; iy += cellStep) {
+      for (let ix = ix0; ix <= ix1; ix += cellStep) {
         const cell = (iz * grid.ny + iy) * grid.nx + ix;
         candidateCount += grid.start[cell + 1] - grid.start[cell];
       }
@@ -782,9 +788,9 @@ function collectContextIndices({
   const stride = Math.max(1, Math.ceil(candidateCount / Math.max(1, maximum)));
   const context = [];
   let ordinal = 0;
-  for (let iz = iz0; iz <= iz1 && context.length < maximum; iz++) {
-    for (let iy = iy0; iy <= iy1 && context.length < maximum; iy++) {
-      for (let ix = ix0; ix <= ix1 && context.length < maximum; ix++) {
+  for (let iz = iz0; iz <= iz1 && context.length < maximum; iz += cellStep) {
+    for (let iy = iy0; iy <= iy1 && context.length < maximum; iy += cellStep) {
+      for (let ix = ix0; ix <= ix1 && context.length < maximum; ix += cellStep) {
         const cell = (iz * grid.ny + iy) * grid.nx + ix;
         for (let cursor = grid.start[cell]; cursor < grid.start[cell + 1]; cursor++) {
           if (ordinal++ % stride !== 0) continue;

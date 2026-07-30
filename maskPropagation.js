@@ -106,6 +106,8 @@ export class TemporalSamTrackingProvider {
     this.timeoutMs = timeoutMs;
     this.sessions = new Map();
     this.capabilities = null;
+    this.lifecycle = null;
+    this.lifecycleRevision = 0;
   }
 
   async probe() {
@@ -131,49 +133,76 @@ export class TemporalSamTrackingProvider {
     objectId = 'selection-1',
   }) {
     if (!seedCanvas || !seedMask || !branches?.length) return false;
-    const frame = await canvasToBlob(seedCanvas);
-    for (const branch of branches) {
-      const staged = branchFrames?.get?.(branch) ?? [];
-      // The official video predictor initializes from a complete ordered
-      // frame sequence. Captured poses without a continuous branch keep using
-      // the independent 3D-guided fallback.
-      if (!staged.length) continue;
-      const form = new FormData();
-      form.append('frame', frame, 'seed.png');
-      form.append('metadata', JSON.stringify({
-        branch,
-        objectId,
-        mask: encodeMaskRle(seedMask, maskW, maskH),
-        views: staged.map(({ view }, index) => ({
-          id: view.id,
-          order: index + 1,
-          yawDegrees: view.yawDegrees ?? null,
-          elevationDegrees: view.elevationDegrees ?? null,
-        })),
-      }));
-      for (const { view, blob } of staged) {
-        form.append('frames', blob, `${view.id}.png`);
+    await this.close();
+    const lifecycle = {
+      revision: ++this.lifecycleRevision,
+      controller: new AbortController(),
+    };
+    this.lifecycle = lifecycle;
+    try {
+      const frame = await canvasToBlob(seedCanvas);
+      this._assertActive(lifecycle);
+      for (const branch of branches) {
+        const staged = branchFrames?.get?.(branch) ?? [];
+        // The official video predictor initializes from a complete ordered
+        // frame sequence. Captured poses without a continuous branch keep using
+        // the independent 3D-guided fallback.
+        if (!staged.length) continue;
+        const form = new FormData();
+        form.append('frame', frame, 'seed.png');
+        form.append('metadata', JSON.stringify({
+          branch,
+          objectId,
+          mask: encodeMaskRle(seedMask, maskW, maskH),
+          views: staged.map(({ view }, index) => ({
+            id: view.id,
+            order: index + 1,
+            yawDegrees: view.yawDegrees ?? null,
+            elevationDegrees: view.elevationDegrees ?? null,
+          })),
+        }));
+        for (const { view, blob } of staged) {
+          form.append('frames', blob, `${view.id}.png`);
+        }
+        const response = await fetch(`${this.endpoint}/sessions`, {
+          method: 'POST',
+          body: form,
+          signal: lifecycle.controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error(`Tracker session failed (${response.status}).`);
+        }
+        const result = await response.json();
+        if (!this._isActive(lifecycle)) {
+          if (result?.sessionId) this._deleteSessionBestEffort(result.sessionId);
+          throw abortError();
+        }
+        if (!result?.sessionId) {
+          throw new Error('Tracker service did not return a session id.');
+        }
+        this.sessions.set(branch, {
+          id: result.sessionId,
+          revision: lifecycle.revision,
+        });
       }
-      const response = await fetch(`${this.endpoint}/sessions`, {
-        method: 'POST',
-        body: form,
-      });
-      if (!response.ok) {
-        await this.close();
-        throw new Error(`Tracker session failed (${response.status}).`);
-      }
-      const result = await response.json();
-      if (!result?.sessionId) {
-        await this.close();
-        throw new Error('Tracker service did not return a session id.');
-      }
-      this.sessions.set(branch, result.sessionId);
+      this._assertActive(lifecycle);
+      if (this.sessions.size) return true;
+      await this.close();
+      return false;
+    } catch (error) {
+      if (this._isActive(lifecycle)) await this.close();
+      throw error;
     }
-    return this.sessions.size > 0;
   }
 
   hasSession(branch) {
-    return this.sessions.has(branch);
+    const session = this.sessions.get(branch);
+    return Boolean(
+      session
+      && this.lifecycle
+      && session.revision === this.lifecycle.revision
+      && !this.lifecycle.controller.signal.aborted
+    );
   }
 
   async propagate({
@@ -184,8 +213,13 @@ export class TemporalSamTrackingProvider {
     view,
     onProgress = null,
   }) {
-    const sessionId = this.sessions.get(branch);
-    if (!sessionId) throw new Error(`No tracker session is active for ${branch}.`);
+    const lifecycle = this.lifecycle;
+    const session = this.sessions.get(branch);
+    if (!lifecycle || !session || session.revision !== lifecycle.revision) {
+      throw new Error(`No tracker session is active for ${branch}.`);
+    }
+    this._assertActive(lifecycle);
+    const sessionId = session.id;
     const form = new FormData();
     // Every frame was uploaded when the temporal session was staged. Sending
     // the same high-resolution image again here forced a needless browser PNG
@@ -203,16 +237,23 @@ export class TemporalSamTrackingProvider {
       sessionId,
       onProgress,
       () => polling,
+      lifecycle.controller.signal,
     );
     const response = await fetch(
       `${this.endpoint}/sessions/${encodeURIComponent(sessionId)}/frames`,
-      { method: 'POST', body: form },
+      {
+        method: 'POST',
+        body: form,
+        signal: lifecycle.controller.signal,
+      },
     ).finally(() => {
       polling = false;
     });
     await progressPolling;
+    this._assertActive(lifecycle, branch, session);
     if (!response.ok) throw new Error(`Tracker frame failed (${response.status}).`);
     const result = await response.json();
+    this._assertActive(lifecycle, branch, session);
     const mask = decodeMaskRle(result.mask);
     const validation = validatePropagatedMask({
       mask,
@@ -256,31 +297,70 @@ export class TemporalSamTrackingProvider {
     };
   }
 
-  async _pollProgress(sessionId, onProgress, isActive) {
+  async _pollProgress(sessionId, onProgress, isActive, signal) {
     if (typeof onProgress !== 'function') return;
-    while (isActive()) {
-      await new Promise((resolve) => setTimeout(resolve, 450));
-      if (!isActive()) break;
+    while (isActive() && !signal?.aborted) {
+      try {
+        await abortableDelay(450, signal);
+      } catch (error) {
+        if (error.name === 'AbortError') return;
+        throw error;
+      }
+      if (!isActive() || signal?.aborted) break;
       try {
         const response = await fetch(
           `${this.endpoint}/sessions/${encodeURIComponent(sessionId)}`,
-          { headers: { accept: 'application/json' } },
+          {
+            headers: { accept: 'application/json' },
+            signal,
+          },
         );
         if (!response.ok) continue;
+        if (signal?.aborted) return;
         onProgress(await response.json());
-      } catch {
+      } catch (error) {
+        if (error.name === 'AbortError' || signal?.aborted) return;
         // Progress is advisory. The frame request remains authoritative.
       }
     }
   }
 
   async close() {
-    const sessions = [...this.sessions.values()];
+    const lifecycle = this.lifecycle;
+    this.lifecycle = null;
+    lifecycle?.controller.abort();
+    const sessions = [...this.sessions.values()].map((session) => session.id);
     this.sessions.clear();
-    await Promise.allSettled(sessions.map((sessionId) => fetch(
-      `${this.endpoint}/sessions/${encodeURIComponent(sessionId)}`,
-      { method: 'DELETE' },
-    )));
+    await Promise.allSettled(sessions.map((sessionId) =>
+      this._deleteSessionBestEffort(sessionId)));
+  }
+
+  _isActive(lifecycle) {
+    return Boolean(
+      lifecycle
+      && this.lifecycle === lifecycle
+      && !lifecycle.controller.signal.aborted
+    );
+  }
+
+  _assertActive(lifecycle, branch = null, session = null) {
+    if (!this._isActive(lifecycle)
+      || (branch !== null && this.sessions.get(branch) !== session)) {
+      throw abortError();
+    }
+  }
+
+  async _deleteSessionBestEffort(sessionId) {
+    try {
+      await fetchWithTimeout(
+        `${this.endpoint}/sessions/${encodeURIComponent(sessionId)}`,
+        { method: 'DELETE' },
+        this.timeoutMs,
+      );
+    } catch {
+      // Local references and requests are already gone. Backend cleanup is
+      // best-effort because a stopped/restarted local service may be offline.
+    }
   }
 }
 
@@ -666,4 +746,28 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+function abortError() {
+  return new DOMException('Tracker session superseded', 'AbortError');
+}
+
+function abortableDelay(milliseconds, signal) {
+  if (signal?.aborted) return Promise.reject(abortError());
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(done, milliseconds);
+    signal?.addEventListener('abort', canceled, { once: true });
+    function cleanup() {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', canceled);
+    }
+    function done() {
+      cleanup();
+      resolve();
+    }
+    function canceled() {
+      cleanup();
+      reject(abortError());
+    }
+  });
 }
