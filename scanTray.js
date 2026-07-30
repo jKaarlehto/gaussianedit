@@ -100,13 +100,13 @@ export class ScanTray {
     // empty card when an inference callback arrives out of order.
     if (!record?.rendered) return;
     if (label) record.label = label;
-    record.maskData = { mask, maskW, maskH };
+    record.maskData = snapshotMask(mask, maskW, maskH);
     record.accepted = Boolean(accepted);
     record.tracked = true;
     record.trackedAt = performance.now();
     this._applyVisualState(record);
-    this._setState(record.accepted ? 'tracking' : 'review');
-    this._setStatus(record.accepted ? 'Following the object' : 'One view needs a check', this.completed);
+    this._setState(record.accepted ? 'tracking' : 'waiting');
+    this._setStatus('Mask received', this.completed);
     this._dispatch('scan-tray:tracked', record);
     this._scheduleMaskReveal(record);
     this._drain();
@@ -127,8 +127,15 @@ export class ScanTray {
     const record = this.records.get(String(id));
     if (!record?.rendered) return;
     record.added = Math.max(0, Number(added) || 0);
+    // Reaching fuse is the acceptance boundary. A mask that waited for a
+    // human decision becomes accepted before its confirmation and transfer.
+    record.accepted = true;
     record.terminal = 'fuse';
     record.terminalAt = performance.now();
+    if (record.maskVisible && record.maskData) {
+      const { mask, maskW, maskH } = record.maskData;
+      drawMask(record.mask, mask, maskW, maskH);
+    }
     this._countCompleted(record);
     this._applyVisualState(record);
     this._setState('fusing');
@@ -145,13 +152,13 @@ export class ScanTray {
     record.terminalAt = performance.now();
     this._countCompleted(record);
     this._applyVisualState(record);
-    this._setStatus('Checking remaining views', this.completed);
+    this._setStatus('Moving to the next view', this.completed);
     this._drain();
   }
 
-  finish({ label = 'All sides checked' } = {}) {
+  finish() {
     this.finishRequested = true;
-    this.finishLabel = label;
+    this.finishLabel = 'Scan complete';
     this._maybeFinish();
   }
 
@@ -252,10 +259,8 @@ export class ScanTray {
     image.className = 'scan-view-image';
     const viewCaption = document.createElement('div');
     const viewName = document.createElement('b');
-    const viewStage = document.createElement('span');
-    viewName.textContent = conciseLabel(record.label);
-    viewStage.textContent = 'view';
-    viewCaption.append(viewName, viewStage);
+    viewName.textContent = 'view';
+    viewCaption.append(viewName);
     sourceCard.append(image, viewCaption);
 
     const maskCard = document.createElement('article');
@@ -269,10 +274,8 @@ export class ScanTray {
     mask.className = 'scan-view-mask';
     const maskCaption = document.createElement('div');
     const maskName = document.createElement('b');
-    const maskStage = document.createElement('span');
-    maskName.textContent = conciseLabel(record.label);
-    maskStage.textContent = 'mask';
-    maskCaption.append(maskName, maskStage);
+    maskName.textContent = 'mask';
+    maskCaption.append(maskName);
     maskCard.append(maskImage, mask, maskCaption);
 
     element.append(sourceCard, maskCard);
@@ -283,14 +286,14 @@ export class ScanTray {
     record.image = image;
     record.maskImage = maskImage;
     record.mask = mask;
-    record.viewStage = viewStage;
-    record.maskStage = maskStage;
+    record.viewStage = viewName;
+    record.maskStage = maskName;
     record.presentedAt = performance.now();
     drawCover(image, record.frame);
     drawCover(maskImage, record.frame);
     if (record.maskData) {
       const { mask: data, maskW, maskH } = record.maskData;
-      drawMask(mask, data, maskW, maskH, record.accepted);
+      drawMask(mask, data, maskW, maskH);
     }
     this._applyVisualState(record);
     this._setStage('view', record);
@@ -300,28 +303,20 @@ export class ScanTray {
   _applyVisualState(record) {
     if (!record.element) return;
     let state = 'rendered';
-    let viewStage = 'view';
-    let maskStage = 'mask';
     if (record.terminal === 'skip') {
       state = 'skipped';
-      maskStage = record.reason || 'not used';
     } else if (record.transferring) {
       state = 'transferring';
-      maskStage = record.added
-        ? `adding ${record.added.toLocaleString()}`
-        : 'updating 3D';
     } else if (record.terminal === 'fuse') {
       state = 'transfer-ready';
-      maskStage = record.added
-        ? `+${record.added.toLocaleString()} ready`
-        : 'ready to add';
     } else if (record.tracked && record.maskVisible) {
       state = record.accepted ? 'tracked' : 'uncertain';
-      maskStage = record.accepted ? 'mask ready' : 'check needed';
     }
     if (record.element.dataset.state !== state) record.element.dataset.state = state;
-    if (record.viewStage.textContent !== viewStage) record.viewStage.textContent = viewStage;
-    if (record.maskStage.textContent !== maskStage) record.maskStage.textContent = maskStage;
+    // The decision panel owns uncertainty language. The tray carries evidence
+    // only, so its captions never mutate into status messages.
+    if (record.viewStage.textContent !== 'view') record.viewStage.textContent = 'view';
+    if (record.maskStage.textContent !== 'mask') record.maskStage.textContent = 'mask';
   }
 
   _countCompleted(record) {
@@ -368,7 +363,7 @@ export class ScanTray {
   _revealMask(record) {
     if (!record.element || !record.maskData || record.maskVisible) return;
     const { mask, maskW, maskH } = record.maskData;
-    drawMask(record.mask, mask, maskW, maskH, record.accepted);
+    drawMask(record.mask, mask, maskW, maskH);
     record.maskVisible = true;
     record.maskShownAt = performance.now();
     record.maskCard.hidden = false;
@@ -417,10 +412,17 @@ export class ScanTray {
 
     if (record.terminal === 'fuse') {
       this._setStage('overlap', record);
-      this._dispatch('scan-tray:pair-overlap', record, { phase: 'start' });
-      await animatePairOverlap(record);
+      const overlap = measurePairOverlap(record);
+      this._dispatch('scan-tray:pair-overlap', record, {
+        phase: 'start',
+        overlap,
+      });
+      await animatePairOverlap(record, overlap);
       if (generation !== this.generation) return;
-      this._dispatch('scan-tray:pair-overlap', record, { phase: 'complete' });
+      this._dispatch('scan-tray:pair-overlap', record, {
+        phase: 'complete',
+        overlap,
+      });
 
       this._setStage('confirm', record);
       this._dispatch('scan-tray:mask-flash', record, { phase: 'start', flashes: 2 });
@@ -433,7 +435,7 @@ export class ScanTray {
       this._dispatch('scan-tray:transfer-start', record, geometry);
       await Promise.all([
         this._emitMaskParticles(record, geometry),
-        animateCardRelease(record.element, 880),
+        animateCardRelease(record.element, 720),
       ]);
       if (generation !== this.generation) return;
       this._dispatch('scan-tray:transfer-complete', record, geometry);
@@ -494,7 +496,7 @@ export class ScanTray {
     }
     if (!selected.length) return;
 
-    const count = Math.min(36, selected.length);
+    const count = Math.min(24, selected.length);
     const completions = [];
     for (let ordinal = 0; ordinal < count; ordinal++) {
       const index = selected[Math.floor(ordinal * selected.length / count)];
@@ -508,7 +510,7 @@ export class ScanTray {
       particle.style.left = `${startX}px`;
       particle.style.top = `${startY}px`;
       this.particleLayer.append(particle);
-      const delay = ordinal * 10;
+      const delay = ordinal * 8;
       const animation = particle.animate([
         { transform: 'translate3d(0,0,0) scale(.65)', opacity: 0 },
         { transform: 'translate3d(0,0,0) scale(1)', opacity: 0.9, offset: 0.14 },
@@ -517,7 +519,7 @@ export class ScanTray {
           opacity: 0,
         },
       ], {
-        duration: 690 + pseudo(ordinal + 9) * 210,
+        duration: 560 + pseudo(ordinal + 9) * 150,
         delay,
         easing: 'cubic-bezier(.22,.72,.25,1)',
         fill: 'forwards',
@@ -540,6 +542,7 @@ export class ScanTray {
         targetRect: plainRect(geometry.target),
         phase: geometry.phase ?? null,
         flashes: geometry.flashes ?? null,
+        overlap: geometry.overlap ?? null,
       },
     }));
   }
@@ -554,7 +557,7 @@ export class ScanTray {
   _maybeFinish() {
     if (!this.finishRequested || this.transferActive || this._head()) return;
     this._setState('complete');
-    this._setStatus(this.finishLabel || 'All sides checked', this.total);
+    this._setStatus(this.finishLabel || 'Scan complete', this.total);
     clearTimeout(this.hideTimer);
     const generation = this.generation;
     this.hideTimer = setTimeout(() => {
@@ -584,13 +587,16 @@ function findOrCreateParticleLayer() {
   return layer;
 }
 
-async function animatePairOverlap(record) {
+async function animatePairOverlap(record, overlap) {
   if (!record.sourceCard?.animate || !record.maskCard?.animate) return;
   record.element.dataset.choreography = 'overlap';
-  const duration = 460;
+  const duration = 360;
   const sourceAnimation = record.sourceCard.animate([
     { transform: 'translate3d(0,0,0)', filter: 'brightness(1)' },
-    { transform: 'translate3d(24px,0,0)', filter: 'brightness(.78)' },
+    {
+      transform: `translate3d(${overlap.sourceX}px,${overlap.sourceY}px,0)`,
+      filter: 'brightness(.78)',
+    },
   ], {
     duration,
     easing: 'cubic-bezier(.2,.72,.25,1)',
@@ -598,7 +604,10 @@ async function animatePairOverlap(record) {
   });
   const maskAnimation = record.maskCard.animate([
     { transform: 'translate3d(0,0,0)', filter: 'brightness(1)' },
-    { transform: 'translate3d(-24px,0,0)', filter: 'brightness(1.16)' },
+    {
+      transform: `translate3d(${overlap.maskX}px,${overlap.maskY}px,0)`,
+      filter: 'brightness(1.16)',
+    },
   ], {
     duration,
     easing: 'cubic-bezier(.2,.72,.25,1)',
@@ -620,7 +629,7 @@ async function flashMaskTwice(mask) {
     { opacity: 0.72, filter: 'drop-shadow(0 0 3px #70d7ff)', offset: 0.58 },
     { opacity: 0.84, filter: 'drop-shadow(0 0 4px #70d7ff)' },
   ], {
-    duration: 680,
+    duration: 560,
     easing: 'ease-in-out',
     fill: 'forwards',
   });
@@ -645,8 +654,9 @@ function animateCardRelease(element, duration, skipped = false) {
 }
 
 function drawCover(target, source) {
-  if (!target || !source?.width || !source?.height) return;
+  if (!target || !source?.width || !source?.height) return false;
   const context = target.getContext('2d');
+  if (!context?.drawImage) return false;
   context.clearRect(0, 0, target.width, target.height);
   const scale = Math.max(target.width / source.width, target.height / source.height);
   const width = source.width * scale;
@@ -658,17 +668,71 @@ function drawCover(target, source) {
     width,
     height,
   );
+  return true;
+}
+
+function measurePairOverlap(record) {
+  const source = record.sourceCard?.getBoundingClientRect?.();
+  const mask = record.maskCard?.getBoundingClientRect?.();
+  const fallbackWidth = Math.max(
+    1,
+    record.sourceCard?.offsetWidth || source?.width || THUMBNAIL_WIDTH,
+    record.maskCard?.offsetWidth || mask?.width || THUMBNAIL_WIDTH,
+  );
+  return computePairOverlap(source, mask, fallbackWidth, 12);
+}
+
+export function computePairOverlap(
+  source,
+  mask,
+  fallbackWidth = THUMBNAIL_WIDTH,
+  fallbackGap = 12,
+) {
+  if (usableRect(source) && usableRect(mask)) {
+    const sourceX = source.left + source.width * 0.5;
+    const sourceY = source.top + source.height * 0.5;
+    const maskX = mask.left + mask.width * 0.5;
+    const maskY = mask.top + mask.height * 0.5;
+    const sharedX = (sourceX + maskX) * 0.5;
+    const sharedY = (sourceY + maskY) * 0.5;
+    return {
+      sourceX: sharedX - sourceX,
+      sourceY: sharedY - sourceY,
+      maskX: sharedX - maskX,
+      maskY: sharedY - maskY,
+    };
+  }
+  const halfDistance = (
+    Math.max(1, Number(fallbackWidth) || THUMBNAIL_WIDTH)
+    + Math.max(0, Number(fallbackGap) || 0)
+  ) * 0.5;
+  return {
+    sourceX: halfDistance,
+    sourceY: 0,
+    maskX: -halfDistance,
+    maskY: 0,
+  };
 }
 
 function createThumbnail(source) {
+  if (
+    !Number.isFinite(Number(source?.width))
+    || !Number.isFinite(Number(source?.height))
+    || Number(source.width) < 1
+    || Number(source.height) < 1
+  ) {
+    throw new TypeError('ScanTray.rendered() requires a non-empty RGB canvas.');
+  }
   const thumbnail = document.createElement('canvas');
   thumbnail.width = THUMBNAIL_WIDTH;
   thumbnail.height = THUMBNAIL_HEIGHT;
-  drawCover(thumbnail, source);
+  if (!drawCover(thumbnail, source)) {
+    throw new Error('ScanTray could not snapshot the staged RGB view.');
+  }
   return thumbnail;
 }
 
-function drawMask(target, mask, width, height, accepted) {
+function drawMask(target, mask, width, height) {
   const context = target.getContext('2d');
   context.clearRect(0, 0, target.width, target.height);
   if (!mask?.length || !width || !height) return;
@@ -677,8 +741,10 @@ function drawMask(target, mask, width, height, accepted) {
     : Object.assign(document.createElement('canvas'), { width, height });
   const sourceContext = source.getContext('2d');
   const image = sourceContext.createImageData(width, height);
-  const color = accepted ? [112, 215, 255] : [242, 193, 78];
-  for (let index = 0; index < mask.length; index++) {
+  // Confidence belongs in the decision panel. Every tray mask is the same
+  // neutral/cyan evidence layer until it is either fused or skipped.
+  const color = [112, 215, 255];
+  for (let index = 0; index < width * height; index++) {
     if (!mask[index]) continue;
     const pixel = index * 4;
     image.data[pixel] = color[0];
@@ -690,11 +756,26 @@ function drawMask(target, mask, width, height, accepted) {
   context.drawImage(source, 0, 0, target.width, target.height);
 }
 
-function conciseLabel(label) {
-  return String(label || 'View')
-    .replace(/\btracking bridge\b/i, 'bridge')
-    .replace(/\bscan\b/i, 'side')
-    .slice(0, 22);
+function snapshotMask(mask, width, height) {
+  const maskW = Math.floor(Number(width));
+  const maskH = Math.floor(Number(height));
+  if (
+    !(mask instanceof Uint8Array)
+    || !Number.isFinite(maskW)
+    || !Number.isFinite(maskH)
+    || maskW < 1
+    || maskH < 1
+    || mask.length !== maskW * maskH
+  ) {
+    throw new TypeError(
+      'ScanTray.tracked() requires the propagated Uint8 mask and its exact dimensions.',
+    );
+  }
+  return {
+    mask: new Uint8Array(mask),
+    maskW,
+    maskH,
+  };
 }
 
 function usableRect(rect) {

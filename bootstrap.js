@@ -1,4 +1,8 @@
 import { releaseMetadata } from './releaseMetadata.js';
+import {
+  createCandidateReviewInbox,
+  reviewReleaseForNotice,
+} from './candidateReview.js';
 
 function createBuildNotice(initialRelease) {
   const notice = document.getElementById('buildNotice');
@@ -7,6 +11,11 @@ function createBuildNotice(initialRelease) {
   const meta = document.getElementById('buildNoticeMeta');
   const toggle = document.getElementById('buildNoticeToggle');
   const reload = document.getElementById('buildNoticeReload');
+  const details = document.getElementById('buildNoticeDetails');
+  const reviewInbox = createCandidateReviewInbox({
+    host: details,
+    before: meta,
+  });
   const loadedBuildId = initialRelease.id;
   let displayedRelease = initialRelease;
   let updateAvailable = false;
@@ -33,6 +42,13 @@ function createBuildNotice(initialRelease) {
       item.textContent = note;
       return item;
     }));
+    // HMR may announce metadata for code that is not loaded yet. Keep review
+    // controls bound to the running build until the user reloads into it.
+    reviewInbox.render(reviewReleaseForNotice(
+      initialRelease,
+      release,
+      isUpdate,
+    ));
     const published = new Date(release.publishedAt);
     meta.textContent = `Loaded ${loadedBuildId} · notes ${Number.isNaN(published.valueOf())
       ? release.publishedAt

@@ -598,26 +598,29 @@
     color: #c5ced0; text-shadow: 0 0 8px #8e979a;
   }
   #scanTray {
-    position: fixed; z-index: 10; top: 10px; left: 50%;
-    width: min(650px, calc(100vw - 690px)); min-width: 260px;
+    position: fixed; z-index: 10; top: 38px; left: 50%;
+    width: min(580px, calc(100vw - 690px)); min-width: 240px;
     transform: translateX(-50%);
-    color: #8aa4a8; font: 7px var(--mono); pointer-events: none;
+    color: #91a4a7; font: 7px var(--mono); pointer-events: none;
   }
   #scanTray[hidden] { display: none; }
   #scanTray header {
     display: flex; align-items: center; justify-content: space-between;
     height: 16px; padding: 0 3px 0 8px;
-    border-left: 1px solid #70d7ff66;
-    background: linear-gradient(90deg, #071116a8, #07111642 72%, transparent);
+    border-left: 1px solid #70d7ff52;
+    background: linear-gradient(90deg, #071116c4, #07111672 72%, transparent);
     text-transform: uppercase; letter-spacing: .11em;
   }
   #scanTray header b { color: #c5f8f0; font-weight: 500; }
+  #scanTray header span {
+    min-width: 0; margin-left: 8px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
   #scanTray[data-state="tracking"] header b,
-  #scanTray[data-state="fusing"] header b { color: #70d7ff; }
+  #scanTray[data-state="fusing"] header b { color: #a8dfe5; }
   .scan-tray-track {
     position: relative; display: flex; justify-content: center; overflow: hidden;
     min-height: 66px; padding: 3px 2px 0;
-    mask-image: linear-gradient(90deg, transparent, #000 4%, #000 96%, transparent);
   }
   .scan-view-pair {
     display: flex; align-items: center; justify-content: center; gap: 4px;
@@ -626,21 +629,21 @@
   .scan-view-pair[hidden] { display: none; }
   .scan-view-card {
     position: relative; flex: 0 0 104px; height: 62px; overflow: hidden;
-    background: #03060866; box-shadow: inset 0 0 0 1px #6dd8d414;
-    opacity: .72; transition: opacity .2s ease, filter .2s ease;
+    background: #030608b8; border: 1px solid #5e747629;
+    opacity: .86; transition: opacity .2s ease, filter .2s ease, transform .2s ease;
   }
   .scan-view-card[hidden] { display: none; }
   .scan-view-card canvas {
     position: absolute; inset: 0; width: 100%; height: 100%;
   }
-  .scan-view-image { opacity: .66; transition: opacity .32s ease, filter .32s ease; }
+  .scan-view-image { opacity: .84; transition: opacity .32s ease, filter .32s ease; }
   .scan-view-mask {
     opacity: 0; mix-blend-mode: screen;
-    filter: drop-shadow(0 0 3px #70d7ff);
+    filter: none;
     transition: opacity .22s ease;
   }
   .scan-view-result .scan-view-image {
-    opacity: .42; filter: saturate(.65) brightness(.72);
+    opacity: .48; filter: saturate(.72) brightness(.78);
   }
   .scan-view-pair[data-state="tracked"] .scan-view-result,
   .scan-view-pair[data-state="transfer-ready"] .scan-view-result,
@@ -650,11 +653,11 @@
   .scan-view-pair[data-state="transfer-ready"] .scan-view-mask,
   .scan-view-pair[data-state="transferring"] .scan-view-mask { opacity: .84; }
   .scan-view-pair[data-state="uncertain"] .scan-view-result {
-    box-shadow: inset 0 0 0 1px #f2c14e55;
+    border-color: #f2c14e66;
   }
   .scan-view-pair[data-state="transfer-ready"] .scan-view-result,
   .scan-view-pair[data-state="transferring"] .scan-view-result {
-    box-shadow: inset 0 0 0 1px #70d7ff66, 0 0 8px #70d7ff18;
+    border-color: #70d7ff66;
   }
   .scan-view-pair[data-state="skipped"] .scan-view-card {
     opacity: .22; filter: grayscale(1);
@@ -676,7 +679,7 @@
   .scan-particle-layer i {
     position: absolute; width: 2px; height: 2px; margin: -1px;
     border-radius: 50%; background: #91f4ff;
-    box-shadow: 0 0 5px #70d7ff, 0 0 10px #70d7ff99;
+    box-shadow: 0 0 3px #70d7ff99;
   }
   #changeDiffHud {
     position: fixed; z-index: 11; top: min(300px, 38vh); right: 342px;
@@ -737,10 +740,29 @@
     height: 2.8em; overflow: hidden; line-height: 1.4;
     font-variant-numeric: tabular-nums; contain: layout paint;
   }
-  #multiviewReview { margin-top: 7px; border: 1px solid var(--line); background: #080a0d; }
+  #multiviewReview {
+    margin-top: 7px; padding: 7px;
+    border: 1px solid #f2c14e55; background: #080a0d;
+  }
   #multiviewReview[hidden] { display: none; }
+  #multiviewReview h4 {
+    margin: 0 0 4px; color: #f0dcc0; font-size: 9px; font-weight: 600;
+    letter-spacing: .08em; text-transform: uppercase;
+  }
   #multiviewCanvas { width: 100%; height: auto; max-height: 150px; object-fit: contain; }
-  #multiviewReviewStatus { padding: 5px 7px; color: var(--dim); font-size: 9px; }
+  #multiviewReviewStatus {
+    min-height: 2.8em; margin: 5px 0 7px; padding: 6px 7px;
+    border-left: 2px solid #f2c14e88; background: #111419;
+    color: #a9b3b5; font-size: 9px; line-height: 1.4;
+  }
+  #multiviewDecisionActions {
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px;
+  }
+  #multiviewDecisionActions button {
+    min-width: 0; padding: 5px 4px; overflow-wrap: anywhere;
+  }
+  #acceptMultiview { border-color: #58d6a866; color: #8de5c4; }
+  #editMultiview { border-color: #70d7ff55; color: #9edce5; }
   [data-tip] { position: relative; }
   [data-tip]:hover::after, [data-tip]:focus-visible::after {
     content: attr(data-tip); position: absolute; z-index: 30;
@@ -785,6 +807,23 @@
   body[data-inspector="true"] #projectionPip[data-editor-open="true"] {
     left: 292px;
     width: min(820px, calc(100vw - 646px));
+  }
+  body[data-scan-active="true"] #projectionPip:not([data-editor-open="true"]) {
+    top: auto; right: auto; bottom: 12px; left: 12px;
+    width: 268px; max-height: 154px;
+    border-color: #70d7ff3d; box-shadow: 0 8px 24px #0007;
+  }
+  body[data-scan-active="true"] #projectionPip:not([data-editor-open="true"]) header {
+    padding: 4px 7px; font-size: 8px;
+  }
+  body[data-scan-active="true"] #projectionPip:not([data-editor-open="true"]) #projectionViewport {
+    min-height: 0; height: 96px;
+  }
+  body[data-scan-active="true"] #projectionPip:not([data-editor-open="true"]) #projectionCanvas {
+    height: 96px;
+  }
+  body[data-scan-active="true"] #projectionPip:not([data-editor-open="true"]) footer {
+    padding: 3px 7px; font-size: 7px;
   }
   #projectionPip header {
     display: flex; align-items: center; gap: 8px;
@@ -873,6 +912,37 @@
     color: #b6cccd; font-size: 8px; white-space: nowrap;
   }
 
+  @media (max-width: 950px) and (min-width: 761px) {
+    #scanTray {
+      left: 292px; right: 342px; width: auto; min-width: 0;
+      transform: none;
+    }
+    .scan-view-card {
+      flex-basis: min(92px, calc((100vw - 650px) / 2));
+    }
+  }
+  @media (max-height: 720px) and (min-width: 761px) {
+    body[data-scan-active="true"] #projectionPip:not([data-editor-open="true"]) {
+      left: 292px; width: min(240px, calc(100vw - 646px));
+    }
+  }
+  @media (max-width: 760px) {
+    #scanTray {
+      top: 34px; right: 8px; left: 8px;
+      width: auto; min-width: 0; transform: none;
+    }
+    body[data-scan-active="true"] #ui,
+    body[data-scan-active="true"] #selectionProps,
+    body[data-scan-active="true"] #objectPreviewHud {
+      top: 126px;
+    }
+    body[data-scan-active="true"] #ui {
+      max-height: calc(100vh - 134px); overflow-y: auto;
+    }
+    body[data-scan-active="true"] #selectionProps {
+      max-height: calc(100vh - 134px);
+    }
+  }
   @media (max-width: 640px) {
     #buildNotice {
       top: 5px; width: calc(100vw - 10px); min-width: 0;
@@ -880,14 +950,38 @@
     #projectionPip { width: min(46vw, 280px); }
     #selectionProps { top: auto; right: 8px; bottom: 8px; width: min(310px, calc(100vw - 16px)); }
     #projectionPip { display: none; }
+    body[data-inspector="true"] #projectionPip[data-editor-open="true"],
+    #projectionPip[data-editor-open="true"] {
+      display: flex; z-index: 20;
+      top: 50%; right: auto; bottom: auto; left: 8px;
+      width: calc(100vw - 16px); height: min(86vh, 740px);
+      max-height: calc(100vh - 16px); transform: translateY(-50%);
+    }
+    body[data-scan-active="true"] #projectionPip:not([data-editor-open="true"]) {
+      display: block; left: 8px; bottom: 8px; width: min(180px, calc(100vw - 334px));
+      min-width: 118px;
+    }
+    body[data-scan-active="true"] #projectionPip:not([data-editor-open="true"]) #projectionViewport,
+    body[data-scan-active="true"] #projectionPip:not([data-editor-open="true"]) #projectionCanvas {
+      height: 72px;
+    }
     #objectPreviewHud {
       top: 8px; left: 8px; right: 8px; width: auto;
     }
+    body[data-scan-active="true"] #selectionProps,
+    body[data-scan-active="true"] #objectPreviewHud {
+      top: 126px;
+    }
     #objectPreviewViewport { height: 180px; }
+  }
+  @media (max-width: 460px) {
+    body[data-scan-active="true"] #projectionPip:not([data-editor-open="true"]) {
+      display: none;
+    }
   }
 </style>
 </head>
-<body data-exploration="false" data-viewfinder-locked="false">
+<body data-exploration="false" data-viewfinder-locked="false" data-scan-active="false">
   <aside id="buildNotice" data-collapsed="true" aria-live="polite" aria-label="Build update">
     <div id="buildNoticeSummary">
       <div id="buildNoticeText"></div>
@@ -946,7 +1040,7 @@
       <h3 class="rail-label">Mode and camera</h3>
       <div id="modeToggle" class="seg" aria-label="Interaction mode">
         <button id="viewfinderMode" aria-pressed="false"
-          data-tip="Fly and aim with first-person mouse look; selection processing stays paused">Viewfinder</button>
+          data-tip="Fly and aim with first-person mouse look; the app pauses selection updates">Viewfinder</button>
         <button id="selectionMode" aria-pressed="true"
           data-tip="Freeze the current camera view and use object-selection tools">Selection</button>
       </div>
@@ -1082,8 +1176,8 @@
     </header>
 
     <section id="visibleSelectionStep">
-      <h3>1 · Select the visible side</h3>
-      <div class="note"><strong>Fast + object hints</strong> finds what this camera can see. If its outline is wrong, correct the image mask before hidden sides are filled.</div>
+      <h3>1 · Select visible side</h3>
+      <div class="note"><strong>Fast + object hints</strong> finds what this camera can see. If its outline is wrong, correct the image mask before the app scans all sides.</div>
       <div class="row">
         <button id="open2dMaskEditor" data-tip="Open the enlarged image mask and correct its silhouette" disabled>Open 2D mask editor</button>
       </div>
@@ -1120,10 +1214,10 @@
     </div>
 
     <section id="multiviewSection">
-      <h3>2 · Fill hidden sides</h3>
+      <h3>2 · Scan all sides</h3>
       <div id="multiviewGate" data-ready="false">
         <strong id="multiviewCapability">Select an object to scan around it</strong>
-        <span id="multiviewCapabilityDetail">The scan creates additional viewpoints, checks the mask from each side, and marks uncertain additions for review.</span>
+        <span id="multiviewCapabilityDetail">The app checks the object from additional viewpoints and pauses only when uncertainty needs your decision.</span>
       </div>
       <div id="multiviewControls" hidden>
         <div class="row">
@@ -1133,7 +1227,7 @@
         </div>
         <div class="estimate-grid" aria-label="Multiview time estimate">
           <span>Computer time</span><output id="automaticEstimate">—</output>
-          <span>Your review</span><output id="reviewEstimate">—</output>
+          <span>Your decisions</span><output id="reviewEstimate">—</output>
           <span>Expected total</span><output id="totalEstimate">—</output>
         </div>
         <div id="multiviewProgress"><i></i></div>
@@ -1153,12 +1247,14 @@
             <div class="note">These settings affect the next tracked scan, not the current object.</div>
           </div>
         </details>
-        <div id="multiviewReview" hidden>
+        <div id="multiviewReview" hidden role="group" aria-labelledby="multiviewDecisionTitle">
+          <h4 id="multiviewDecisionTitle">Your decision</h4>
           <canvas id="multiviewCanvas"></canvas>
-          <div id="multiviewReviewStatus">Review this proposed mask.</div>
-          <div class="row">
-            <button id="rejectMultiview">Skip angle</button>
-            <button id="acceptMultiview">Use this mask</button>
+          <div id="multiviewReviewStatus" role="status" aria-live="polite">This angle is uncertain. Choose how the scan should continue.</div>
+          <div id="multiviewDecisionActions">
+            <button id="acceptMultiview">Keep</button>
+            <button id="rejectMultiview">Skip</button>
+            <button id="editMultiview">Edit starting mask</button>
           </div>
         </div>
         <div class="note">Blocked angles are skipped. Only masks tracked through the intact scene contribute to the automatic result.</div>
@@ -1166,7 +1262,7 @@
     </section>
 
     <section id="gaussianCleanupStep">
-      <h3>3 · Clean selected 3D splats</h3>
+      <h3>3 · Fix if needed</h3>
       <div class="note">Only if needed: brush stray particles directly from the floating hologram. This edits Gaussians, not image pixels.</div>
       <div class="row">
         <button id="startHologramCleanup" aria-pressed="false" disabled
@@ -1184,7 +1280,7 @@
     </details>
 
     <section id="finishSelectionStep">
-      <h3>4 · Dock the object</h3>
+      <h3>4 · Dock object</h3>
       <div class="note">Every splat visible in the hologram is already included. Evidence colors never block docking.</div>
       <div class="row commit">
         <button id="undoPreview" data-tip="Step back through object-selection clicks; Esc does the same" disabled>Undo selection</button>

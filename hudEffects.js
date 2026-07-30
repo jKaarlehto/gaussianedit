@@ -10,6 +10,7 @@ const CORNER_FRACTION = 0.18;
 export class HudEffects {
   constructor(renderer) {
     this.renderer = renderer;
+    this._rendererState = createRendererStateSnapshot(renderer);
     this.scene = new THREE.Scene();
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -1, 1);
 
@@ -54,6 +55,7 @@ export class HudEffects {
 
     this.suggestion = null;
     this.startedAt = 0;
+    this._logicalSize = new THREE.Vector2();
     this.reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
   }
 
@@ -110,6 +112,9 @@ export class HudEffects {
 
   render(now = performance.now()) {
     if (!this.suggestion) return;
+    // Selection cues are a visible-cockpit overlay, never part of an offscreen
+    // model input or synthetic tracking frame.
+    if (this.renderer.getRenderTarget() !== null) return;
     const age = now - this.startedAt;
     // Hover must acknowledge the target immediately; the short reveal remains
     // as polish rather than functioning as input latency.
@@ -144,11 +149,20 @@ export class HudEffects {
       this.scanMaterial.opacity = 0;
     }
 
-    const autoClear = this.renderer.autoClear;
-    this.renderer.autoClear = false;
-    this.renderer.clearDepth();
-    this.renderer.render(this.scene, this.camera);
-    this.renderer.autoClear = autoClear;
+    const rendererState = this._rendererState.capture();
+    try {
+      this.renderer.getSize(this._logicalSize);
+      this.renderer.autoClear = false;
+      // Default-target viewport APIs intentionally receive logical/CSS sizes;
+      // WebGLRenderer applies its pixel ratio exactly once.
+      this.renderer.setViewport(0, 0, this._logicalSize.x, this._logicalSize.y);
+      this.renderer.setScissor(0, 0, this._logicalSize.x, this._logicalSize.y);
+      this.renderer.setScissorTest(false);
+      this.renderer.clearDepth();
+      this.renderer.render(this.scene, this.camera);
+    } finally {
+      rendererState.restore();
+    }
   }
 
   dispose() {
@@ -159,4 +173,48 @@ export class HudEffects {
     this.outlineGeometry.dispose();
     this.outlineMaterial.dispose();
   }
+}
+
+function createRendererStateSnapshot(renderer) {
+  return {
+    renderTarget: null,
+    activeCubeFace: 0,
+    activeMipmapLevel: 0,
+    viewport: new THREE.Vector4(),
+    scissor: new THREE.Vector4(),
+    clearColor: new THREE.Color(),
+    capture() {
+      this.renderTarget = renderer.getRenderTarget();
+      this.activeCubeFace = renderer.getActiveCubeFace?.() ?? 0;
+      this.activeMipmapLevel = renderer.getActiveMipmapLevel?.() ?? 0;
+      renderer.getViewport(this.viewport);
+      renderer.getScissor(this.scissor);
+      this.scissorTest = renderer.getScissorTest();
+      renderer.getClearColor(this.clearColor);
+      this.clearAlpha = renderer.getClearAlpha();
+      this.autoClear = renderer.autoClear;
+      this.outputColorSpace = renderer.outputColorSpace;
+      this.toneMapping = renderer.toneMapping;
+      this.toneMappingExposure = renderer.toneMappingExposure;
+      this.restored = false;
+      return this;
+    },
+    restore() {
+      if (this.restored) return;
+      this.restored = true;
+      renderer.outputColorSpace = this.outputColorSpace;
+      renderer.toneMapping = this.toneMapping;
+      renderer.toneMappingExposure = this.toneMappingExposure;
+      renderer.setRenderTarget(
+        this.renderTarget,
+        this.activeCubeFace,
+        this.activeMipmapLevel,
+      );
+      renderer.setViewport(this.viewport);
+      renderer.setScissor(this.scissor);
+      renderer.setScissorTest(this.scissorTest);
+      renderer.setClearColor(this.clearColor, this.clearAlpha);
+      renderer.autoClear = this.autoClear;
+    },
+  };
 }

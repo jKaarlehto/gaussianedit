@@ -16,9 +16,9 @@ replacing the running app. The banner asks the user to reload so code and build
 notes always refer to the same loaded version. Collapsing the banner leaves a
 small build chip at the top of the screen.
 
-## Current candidate — 2026.07.30-rc1
+## Current candidate — 2026.07.30-rc2
 
-- Dedicated NVIDIA or AMD graphics are checked before the scene and AI models load.
-- All-sides scans use a compact object region and release bridge images after backend upload.
-- Selection undo stores only changed points, and offscreen scans restore the renderer state.
-- Live development updates reload the page, so finish or stop an active selection before applying one.
+- The cockpit stays visible without black blinks while selecting and capturing all sides.
+- The scan tray shows each real RGB view and exact mask, overlaps them, flashes twice, then transfers into the hologram.
+- The 2D mask postcard docks on the left, and Edit starting mask opens a usable mask editor.
+- Ambiguous angles offer Keep, Skip, and Edit; candidate checks and comments persist in the update banner.

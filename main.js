@@ -90,6 +90,71 @@ renderer.domElement.dataset.selectionState = 'idle';
 document.body.appendChild(renderer.domElement);
 const rendererLogicalSize = new THREE.Vector2();
 
+/**
+ * Snapshot every piece of WebGLRenderer state touched by an auxiliary pass.
+ *
+ * Three keeps viewport/scissor values per active render target, so the target
+ * must be restored before those rectangles. Default-framebuffer rectangles are
+ * logical CSS pixels; render-target rectangles are physical texture pixels.
+ */
+function createSharedRendererStateSnapshot(targetRenderer) {
+  return {
+    renderTarget: null,
+    activeCubeFace: 0,
+    activeMipmapLevel: 0,
+    viewport: new THREE.Vector4(),
+    scissor: new THREE.Vector4(),
+    clearColor: new THREE.Color(),
+    capture() {
+      this.renderTarget = targetRenderer.getRenderTarget();
+      this.activeCubeFace = targetRenderer.getActiveCubeFace?.() ?? 0;
+      this.activeMipmapLevel = targetRenderer.getActiveMipmapLevel?.() ?? 0;
+      targetRenderer.getViewport(this.viewport);
+      targetRenderer.getScissor(this.scissor);
+      this.scissorTest = targetRenderer.getScissorTest();
+      targetRenderer.getClearColor(this.clearColor);
+      this.clearAlpha = targetRenderer.getClearAlpha();
+      this.autoClear = targetRenderer.autoClear;
+      this.outputColorSpace = targetRenderer.outputColorSpace;
+      this.toneMapping = targetRenderer.toneMapping;
+      this.toneMappingExposure = targetRenderer.toneMappingExposure;
+      this.restored = false;
+      return this;
+    },
+    restore() {
+      if (this.restored) return;
+      this.restored = true;
+      targetRenderer.outputColorSpace = this.outputColorSpace;
+      targetRenderer.toneMapping = this.toneMapping;
+      targetRenderer.toneMappingExposure = this.toneMappingExposure;
+      targetRenderer.setRenderTarget(
+        this.renderTarget,
+        this.activeCubeFace,
+        this.activeMipmapLevel,
+      );
+      targetRenderer.setViewport(this.viewport);
+      targetRenderer.setScissor(this.scissor);
+      targetRenderer.setScissorTest(this.scissorTest);
+      targetRenderer.setClearColor(this.clearColor, this.clearAlpha);
+      targetRenderer.autoClear = this.autoClear;
+    },
+  };
+}
+const selectionCaptureRendererState = createSharedRendererStateSnapshot(renderer);
+const refinementCaptureRendererState = createSharedRendererStateSnapshot(renderer);
+
+function prepareVisibleRendererState() {
+  renderer.setRenderTarget(null);
+  renderer.getSize(rendererLogicalSize);
+  // WebGLRenderer applies the display pixel ratio to default-framebuffer
+  // rectangles, so these are deliberately logical/CSS dimensions.
+  renderer.setViewport(0, 0, rendererLogicalSize.x, rendererLogicalSize.y);
+  renderer.setScissor(0, 0, rendererLogicalSize.x, rendererLogicalSize.y);
+  renderer.setScissorTest(false);
+  renderer.setClearColor(0x000000, 1);
+  renderer.autoClear = true;
+}
+
 const scene = new THREE.Scene();
 // Synthetic views use their own resident Gaussian cutout. This keeps the
 // visible cockpit viewer and its depth order completely untouched.
@@ -222,6 +287,7 @@ const ui = {
   multiviewReviewStatus: document.getElementById('multiviewReviewStatus'),
   multiviewAccept: document.getElementById('acceptMultiview'),
   multiviewReject: document.getElementById('rejectMultiview'),
+  multiviewEdit: document.getElementById('editMultiview'),
   suggestionsToggle: document.getElementById('suggestionsToggle'),
   scanTray: document.getElementById('scanTray'),
   viewfinderMode: document.getElementById('viewfinderMode'),
@@ -2653,13 +2719,7 @@ function captureSceneFrame(targetCanvas, targetContext, targetCamera = camera) {
   const wasVisible = hl?.visible;
   const wasDockVisible = segmentDock.root.visible;
   const wasSplatVisible = state.splat?.object3D.visible;
-  const previousTarget = renderer.getRenderTarget();
-  const previousClearColor = renderer.getClearColor(new THREE.Color());
-  const previousClearAlpha = renderer.getClearAlpha();
-  const previousViewport = renderer.getViewport(new THREE.Vector4());
-  const previousScissor = renderer.getScissor(new THREE.Vector4());
-  const previousScissorTest = renderer.getScissorTest();
-  const previousAutoClear = renderer.autoClear;
+  const rendererState = selectionCaptureRendererState.capture();
   if (hl) hl.visible = false;
   segmentDock.root.visible = false;
   state.splat?.setEncodingRipple(0);
@@ -2703,12 +2763,7 @@ function captureSceneFrame(targetCanvas, targetContext, targetCamera = camera) {
     }
     targetContext.putImageData(currentViewReadback.image, 0, 0);
   } finally {
-    renderer.setRenderTarget(previousTarget);
-    renderer.setClearColor(previousClearColor, previousClearAlpha);
-    renderer.setViewport(previousViewport);
-    renderer.setScissor(previousScissor);
-    renderer.setScissorTest(previousScissorTest);
-    renderer.autoClear = previousAutoClear;
+    rendererState.restore();
     if (hl) hl.visible = wasVisible;
     segmentDock.root.visible = wasDockVisible;
     if (state.splat) state.splat.object3D.visible = wasSplatVisible;
@@ -2717,6 +2772,10 @@ function captureSceneFrame(targetCanvas, targetContext, targetCamera = camera) {
       encodingRippleFrame.phase,
       encodingRippleFrame.width,
     );
+    // Even though the pass is isolated, force the next animation tick to
+    // repaint the cockpit. This makes recovery immediate if a driver exposes a
+    // transient default-framebuffer loss while switching render targets.
+    lastCockpitRenderedAt = 0;
   }
 }
 
@@ -4926,6 +4985,7 @@ document.getElementById('acceptMultiview').addEventListener('click', () => {
 document.getElementById('rejectMultiview').addEventListener('click', () => {
   resolveMultiviewProposal(false);
 });
+ui.multiviewEdit?.addEventListener('click', editMultiviewStartingMask);
 
 async function startMultiviewRefinement() {
   if (!state.splat || !state.selection.size) return;
@@ -5039,6 +5099,7 @@ async function startMultiviewRefinement() {
         cutoutBuildMs: 0,
         renderedFrames: 0,
         reusedFrames: 0,
+        blackCaptures: [],
         frames: [],
         startedAt: performance.now(),
         stageFramesMs: 0,
@@ -5047,6 +5108,7 @@ async function startMultiviewRefinement() {
     session.diagnostics.sessionId = session.id;
     scanDiagnostics.current = session.diagnostics;
     state.multiview.session = session;
+    document.body.dataset.scanActive = 'true';
     clearTimeout(encodeTimer);
     encodeQueued = false;
     pendingModelViewEncode = null;
@@ -5252,7 +5314,7 @@ async function processNextMultiviewView(session) {
         }
       }
     } else {
-      rendered = await captureRefinementView(session, view, refinementCamera);
+      rendered = await captureCheckedRefinementView(session, view, refinementCamera);
     }
     if (session.canceled) return;
     renderFinishedAt = performance.now();
@@ -5553,27 +5615,50 @@ function showMultiviewReview(session, message) {
   if (state.multiview.session !== session || session.canceled) return;
   session.waitingReview = true;
   const proposal = session.currentProposal;
+  const reveal = Boolean(proposal?.alteredVisibility);
   drawMultiviewProposal(proposal);
   ui.multiviewReview.hidden = false;
-  ui.multiviewReviewStatus.textContent = message;
-  ui.multiviewAccept.textContent = proposal?.alteredVisibility
+  ui.multiviewReviewStatus.textContent = reveal
+    ? `Your decision: keep these revealed points as “needs checking”, `
+      + `or ignore this reveal. ${message}`
+    : `Your decision: use this tracked mask for the 3D object, `
+      + `or skip this angle without adding points. ${message}`;
+  ui.multiviewAccept.textContent = reveal
     ? 'Keep as needs checking'
-    : 'Use this mask';
-  ui.multiviewReject.textContent = proposal?.alteredVisibility
-    ? 'Ignore reveal'
-    : 'Skip angle';
+    : 'Use tracked mask';
+  ui.multiviewReject.textContent = reveal
+    ? 'Ignore revealed points'
+    : 'Skip this angle';
+  if (ui.multiviewEdit) {
+    ui.multiviewEdit.hidden = !state.active?.currentMask;
+    ui.multiviewEdit.disabled = !state.active?.currentMask;
+    ui.multiviewEdit.textContent = 'Edit starting mask';
+    ui.multiviewEdit.dataset.tip =
+      'Stop this scan and open the existing 2D editor for the visible starting mask';
+  }
   ui.multiviewStatus.textContent =
-    proposal?.alteredVisibility
-      ? `Review reveal view ${session.index + 1} of ${session.views.length} — possible hidden surfaces`
-      : `Review angle ${session.index + 1} of ${session.views.length} — the cockpit view stayed fixed`;
+    reveal
+      ? `Your decision · reveal view ${session.index + 1} of ${session.views.length}`
+      : `Your decision · angle ${session.index + 1} of ${session.views.length} · your cockpit view stayed fixed`;
   setWork({
     key: `multiview-${session.id}`,
     state: 'queued',
-    title: `Review angle ${session.index + 1} of ${session.views.length}`,
+    title: `Your decision · angle ${session.index + 1} of ${session.views.length}`,
     detail: message,
-    steps: ['render angle', 'follow object', 'map to 3D', 'review', 'combine'],
+    steps: ['render angle', 'follow object', 'map to 3D', 'your decision', 'combine'],
     active: 3,
   });
+}
+
+function editMultiviewStartingMask() {
+  const session = state.multiview.session;
+  if (!session?.waitingReview || !state.active?.currentMask) return;
+  stopMultiviewForSeedEdit('All-sides scan stopped to edit the starting mask');
+  setProjectionEditorOpen(true);
+  if (state.projectionEditorOpen) {
+    ui.multiviewStatus.textContent =
+      'Scan stopped · editing the visible starting mask in the existing 2D editor';
+  }
 }
 
 async function resolveMultiviewProposal(accepted) {
@@ -5699,6 +5784,7 @@ function finishMultiviewSession(session, title) {
   scanDiagnostics.last = session.diagnostics;
   scanDiagnostics.current = null;
   state.multiview.session = null;
+  delete document.body.dataset.scanActive;
   lastRenderedFrameAt = 0;
   ui.selectionProps.dataset.scanning = 'false';
   clearBusy('object scan');
@@ -5939,7 +6025,7 @@ async function stageTemporalTrackingFrames(session) {
     const reused = Boolean(blob);
     if (!blob) {
       applyViewToCamera(view, refinementCamera);
-      capture = await captureRefinementView(session, view, refinementCamera);
+      capture = await captureCheckedRefinementView(session, view, refinementCamera);
       const encodeStartedAt = performance.now();
       blob = await canvasToBlob(multiviewCapture, 'image/jpeg', 0.86);
       encodeMs = performance.now() - encodeStartedAt;
@@ -5984,6 +6070,7 @@ async function stageTemporalTrackingFrames(session) {
       imageCopyMs: capture?.timings.imageCopyMs ?? 0,
       encodeMs,
       totalMs: (capture?.timings.totalMs ?? 0) + encodeMs,
+      content: capture?.content ?? null,
     });
     if (reused) session.diagnostics.reusedFrames++;
     else session.diagnostics.renderedFrames++;
@@ -6071,17 +6158,66 @@ async function drawStagedTrackingFrame(blob, view) {
  * WebGL2 readback when available, allowing normal frames to render while the
  * GPU copy completes.
  */
-async function captureRefinementView(session, view, targetCamera) {
+async function captureCheckedRefinementView(session, view, targetCamera) {
+  const maximumAttempts = 2;
+  let rejectedAsynchronousFrame = false;
+  for (let attempt = 1; attempt <= maximumAttempts; attempt++) {
+    const forceSynchronous = Boolean(session.forceSynchronousReadback || attempt > 1);
+    const capture = await captureRefinementView(
+      session,
+      view,
+      targetCamera,
+      { forceSynchronous },
+    );
+    if (!capture.content.black) {
+      if (forceSynchronous && rejectedAsynchronousFrame
+        && !session.forceSynchronousReadback) {
+        session.forceSynchronousReadback = true;
+        session.diagnostics.readbackFallback =
+          'Asynchronous GPU readback returned black; using synchronous readback';
+        console.warn('[tracking] using synchronous readback after black async frame');
+      }
+      return capture;
+    }
+
+    const diagnostic = {
+      viewId: view.id,
+      label: view.label,
+      attempt,
+      content: capture.content,
+      source: capture.source,
+    };
+    rejectedAsynchronousFrame ||= capture.source.readback === 'asynchronous';
+    if (session.diagnostics.blackCaptures.length < 6) {
+      session.diagnostics.blackCaptures.push(diagnostic);
+    }
+    console.warn('[tracking] rejected black synthetic RGB frame', diagnostic);
+    if (attempt < maximumAttempts) {
+      ui.multiviewStatus.textContent =
+        `Rendering ${view.label ?? 'view'} again · the first RGB frame was empty`;
+      await yieldInteractiveFrame(session);
+      if (session.canceled || state.multiview.session !== session) {
+        throw new DOMException('Synthetic capture retry superseded', 'AbortError');
+      }
+    }
+  }
+
+  const error = new Error(
+    `Synthetic capture for ${view.label ?? view.id ?? 'view'} remained black after retry`,
+  );
+  error.name = 'BlackSyntheticFrameError';
+  throw error;
+}
+
+async function captureRefinementView(
+  session,
+  view,
+  targetCamera,
+  { forceSynchronous = false } = {},
+) {
   const width = Math.max(1, Math.round(view.width || multiviewCapture.width || 768));
   const height = Math.max(1, Math.round(view.height || multiviewCapture.height || 512));
   const target = ensureRefinementRenderTarget(width, height);
-  const previousTarget = renderer.getRenderTarget();
-  const previousClearColor = renderer.getClearColor(new THREE.Color());
-  const previousClearAlpha = renderer.getClearAlpha();
-  const previousViewport = renderer.getViewport(new THREE.Vector4());
-  const previousScissor = renderer.getScissor(new THREE.Vector4());
-  const previousScissorTest = renderer.getScissorTest();
-  const previousAutoClear = renderer.autoClear;
   const captureSource = session.trackingCutout;
   const captureScene = refinementScene;
   if (!captureSource) {
@@ -6095,19 +6231,40 @@ async function captureRefinementView(session, view, targetCamera) {
     totalMs: 0,
   };
   const captureStartedAt = performance.now();
-  let rendererStateRestored = false;
+  let content = null;
+  let source = null;
   session.capturing = true;
-  const restoreRendererState = () => {
-    renderer.setRenderTarget(previousTarget);
-    renderer.setClearColor(previousClearColor, previousClearAlpha);
-    renderer.setViewport(previousViewport);
-    renderer.setScissor(previousScissor);
-    renderer.setScissorTest(previousScissorTest);
-    renderer.autoClear = previousAutoClear;
-    rendererStateRestored = true;
-  };
 
   try {
+    const cutoutObject = captureSource.object3D;
+    const cutoutMesh = cutoutObject?.splatMesh ?? cutoutObject?.viewer?.splatMesh;
+    source = {
+      count: captureSource.count ?? 0,
+      objectVisible: cutoutObject?.visible !== false,
+      splatVisible: cutoutMesh?.visible !== false,
+      renderReady: cutoutObject?.viewer?.splatRenderReady ?? null,
+      cameraLayerMask: targetCamera.layers.mask,
+      objectLayerMask: cutoutObject?.layers?.mask ?? null,
+      outputColorSpace: String(renderer.outputColorSpace),
+      toneMapping: String(renderer.toneMapping),
+      exposure: renderer.toneMappingExposure,
+      width,
+      height,
+    };
+    // The cutout is scan-owned and never mounted in the cockpit. Reassert its
+    // renderability without touching the source scene or full-scene sorter.
+    if (cutoutObject) {
+      cutoutObject.visible = true;
+      cutoutObject.updateMatrixWorld(true);
+    }
+    if (cutoutMesh) {
+      cutoutMesh.visible = true;
+      cutoutMesh.frustumCulled = false;
+    }
+    targetCamera.layers.enable(0);
+    targetCamera.updateMatrixWorld(true);
+    captureScene.updateMatrixWorld(true);
+
     const sortStartedAt = performance.now();
     await captureSource.prepareView(renderer, targetCamera);
     timings.sortMs = performance.now() - sortStartedAt;
@@ -6116,51 +6273,63 @@ async function captureRefinementView(session, view, targetCamera) {
     }
 
     const renderStartedAt = performance.now();
-    target.viewport.set(0, 0, width, height);
-    target.scissor.set(0, 0, width, height);
-    target.scissorTest = false;
-    target.texture.colorSpace = renderer.outputColorSpace;
-    renderer.setRenderTarget(target);
-    renderer.autoClear = false;
-    renderer.setClearColor(0x000000, 1);
-    renderer.clear(true, true, true);
-    // DropInViewer updates itself from its onBeforeRender callback. Calling
-    // update() here as well would ask its sorter to inspect the same camera
-    // twice for every synthetic frame.
-    renderer.render(captureScene, targetCamera);
-    timings.renderMs = performance.now() - renderStartedAt;
+    const rendererState = refinementCaptureRendererState.capture();
+    let readback = null;
+    let readbackStartedAt = 0;
+    try {
+      // Render-target viewport/scissor values are physical texture pixels.
+      // Using renderer.setViewport() here would apply the display pixel ratio
+      // when the previous target was the visible framebuffer.
+      target.viewport.set(0, 0, width, height);
+      target.scissor.set(0, 0, width, height);
+      target.scissorTest = false;
+      target.texture.colorSpace = renderer.outputColorSpace;
+      renderer.setRenderTarget(target);
+      renderer.autoClear = false;
+      renderer.setClearColor(0x000000, 1);
+      renderer.clear(true, true, true);
+      // DropInViewer updates itself from its onBeforeRender callback. Calling
+      // update() here as well would ask its sorter to inspect the same camera
+      // twice for every synthetic frame.
+      renderer.render(captureScene, targetCamera);
+      timings.renderMs = performance.now() - renderStartedAt;
 
-    const readbackStartedAt = performance.now();
-    const asyncReadback = typeof renderer.readRenderTargetPixelsAsync === 'function';
-    const readback = asyncReadback
-      ? renderer.readRenderTargetPixelsAsync(
-        target,
-        0,
-        0,
-        width,
-        height,
-        refinementReadback.pixels,
-      )
-      : null;
-    if (!asyncReadback) {
-      renderer.readRenderTargetPixels(
-        target,
-        0,
-        0,
-        width,
-        height,
-        refinementReadback.pixels,
-      );
+      const asyncReadback = !forceSynchronous
+        && typeof renderer.readRenderTargetPixelsAsync === 'function';
+      source.readback = asyncReadback ? 'asynchronous' : 'synchronous';
+      readbackStartedAt = performance.now();
+      readback = asyncReadback
+        ? renderer.readRenderTargetPixelsAsync(
+          target,
+          0,
+          0,
+          width,
+          height,
+          refinementReadback.pixels,
+        )
+        : null;
+      if (!asyncReadback) {
+        renderer.readRenderTargetPixels(
+          target,
+          0,
+          0,
+          width,
+          height,
+          refinementReadback.pixels,
+        );
+      }
+    } finally {
+      // No shared renderer state is held across the asynchronous GPU fence.
+      rendererState.restore();
+      lastCockpitRenderedAt = 0;
     }
-    // Restore the visible framebuffer before awaiting the GPU fence. This is
-    // what keeps requestAnimationFrame free to draw the cockpit meanwhile.
-    restoreRendererState();
     if (readback) await readback;
     timings.readbackMs = performance.now() - readbackStartedAt;
     if (session.canceled || state.multiview.session !== session) {
       throw new DOMException('View capture superseded', 'AbortError');
     }
 
+    content = analyzeCaptureContent(refinementReadback.pixels, width, height);
     const copyStartedAt = performance.now();
     if (multiviewCapture.width !== width || multiviewCapture.height !== height) {
       multiviewCapture.width = width;
@@ -6178,11 +6347,43 @@ async function captureRefinementView(session, view, targetCamera) {
     multiviewCaptureCtx.putImageData(image, 0, 0);
     timings.imageCopyMs = performance.now() - copyStartedAt;
   } finally {
-    if (!rendererStateRestored) restoreRendererState();
     session.capturing = false;
   }
   timings.totalMs = performance.now() - captureStartedAt;
-  return { width, height, timings };
+  return { width, height, timings, content, source };
+}
+
+function analyzeCaptureContent(pixels, width, height, maximumSamples = 16_384) {
+  const pixelCount = Math.max(0, Math.min(width * height, pixels.length / 4));
+  const stride = Math.max(1, Math.ceil(pixelCount / maximumSamples));
+  let samples = 0;
+  let litSamples = 0;
+  let transparentSamples = 0;
+  let luminanceTotal = 0;
+  let maximumLuminance = 0;
+  for (let pixel = 0; pixel < pixelCount; pixel += stride) {
+    const offset = pixel * 4;
+    const luminance = pixels[offset] * 0.2126
+      + pixels[offset + 1] * 0.7152
+      + pixels[offset + 2] * 0.0722;
+    luminanceTotal += luminance;
+    maximumLuminance = Math.max(maximumLuminance, luminance);
+    if (luminance >= 6) litSamples++;
+    if (pixels[offset + 3] < 8) transparentSamples++;
+    samples++;
+  }
+  const litFraction = samples ? litSamples / samples : 0;
+  return Object.freeze({
+    samples,
+    stride,
+    meanLuminance: samples ? luminanceTotal / samples : 0,
+    maximumLuminance,
+    litFraction,
+    transparentFraction: samples ? transparentSamples / samples : 0,
+    // Requiring both no meaningfully lit sample and a tiny peak avoids
+    // rejecting legitimately dark scenes while still catching an empty clear.
+    black: samples === 0 || (litSamples === 0 && maximumLuminance < 3),
+  });
 }
 
 function projectSelectionCentroid(width, height) {
@@ -6295,7 +6496,7 @@ async function tryOccluderRevealPass({
   let revealRenderFinishedAt = performance.now();
   let revealInferenceFinishedAt = revealRenderFinishedAt;
   try {
-    const rendered = await captureRefinementView(session, view, refinementCamera);
+    const rendered = await captureCheckedRefinementView(session, view, refinementCamera);
     revealRenderFinishedAt = performance.now();
     if (session.canceled || state.multiview.session !== session) {
       throw new DOMException('Reveal view superseded', 'AbortError');
@@ -7000,12 +7201,12 @@ renderer.setAnimationLoop(() => {
           : state.selection.size
             ? 1000 / 15
             : 100;
+  // Every animation tick that may draw HUD content starts from a canonical
+  // visible-framebuffer state. Auxiliary passes restore their snapshots, but
+  // this also self-heals immediately after a driver/context restoration quirk.
+  prepareVisibleRendererState();
   if (now - lastCockpitRenderedAt >= cockpitInterval) {
     lastCockpitRenderedAt = now;
-    renderer.setRenderTarget(null);
-    renderer.setScissorTest(false);
-    renderer.getSize(rendererLogicalSize);
-    renderer.setViewport(0, 0, rendererLogicalSize.x, rendererLogicalSize.y);
     // The source cloud is always the cockpit background. Docking/focus uses
     // the per-Gaussian hidden mask; no workflow may hide the whole renderer.
     if (state.splat) state.splat.object3D.visible = true;

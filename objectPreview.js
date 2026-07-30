@@ -20,6 +20,7 @@ export class ObjectPreview {
   } = {}) {
     this.renderer = renderer;
     this.interactionElement = interactionElement;
+    this._rendererState = createRendererStateSnapshot(renderer);
     this.onStats = onStats;
     this.onBrushStart = onBrushStart;
     this.onBrush = onBrush;
@@ -636,6 +637,9 @@ export class ObjectPreview {
 
   render(now = performance.now()) {
     if (!this.hasData) return;
+    // This HUD belongs exclusively to the visible cockpit. Never draw it into
+    // a model-input or synthetic-view target owned by another renderer pass.
+    if (this.renderer.getRenderTarget() !== null) return;
     const target = this.interactionElement.getBoundingClientRect();
     const canvas = this.renderer.domElement.getBoundingClientRect();
     const width = Math.max(1, target.width);
@@ -711,23 +715,37 @@ export class ObjectPreview {
     );
     this.layers.removed.material.uniforms.uEvidence.value = 1;
     this.layers.context.material.uniforms.uEvidence.value = 0;
+    const physicalViewportHeight = height * this.renderer.getPixelRatio();
     for (const layer of Object.values(this.layers)) {
-      layer.material.uniforms.uViewportHeight.value = height;
+      // gl_PointSize is measured in drawing-buffer pixels, while DOM bounds
+      // and WebGLRenderer's default-target viewport API use logical pixels.
+      layer.material.uniforms.uViewportHeight.value = physicalViewportHeight;
     }
     this.dust.rotation.y = now * 0.000035;
 
     const x = target.left - canvas.left;
     const y = canvas.bottom - target.bottom;
-    const autoClear = this.renderer.autoClear;
-    this.renderer.autoClear = false;
-    this.renderer.setViewport(x, y, width, height);
-    this.renderer.setScissor(x, y, width, height);
-    this.renderer.setScissorTest(true);
-    this.renderer.clearDepth();
-    this.renderer.render(this.scene, this.camera);
-    this.renderer.setScissorTest(false);
-    this.renderer.setViewport(0, 0, canvas.width, canvas.height);
-    this.renderer.autoClear = autoClear;
+    const clippedLeft = Math.max(target.left, canvas.left);
+    const clippedRight = Math.min(target.right, canvas.right);
+    const clippedTop = Math.max(target.top, canvas.top);
+    const clippedBottom = Math.min(target.bottom, canvas.bottom);
+    const scissorX = clippedLeft - canvas.left;
+    const scissorY = canvas.bottom - clippedBottom;
+    const scissorWidth = clippedRight - clippedLeft;
+    const scissorHeight = clippedBottom - clippedTop;
+    if (!(scissorWidth > 0) || !(scissorHeight > 0)) return;
+
+    const rendererState = this._rendererState.capture();
+    try {
+      this.renderer.autoClear = false;
+      this.renderer.setViewport(x, y, width, height);
+      this.renderer.setScissor(scissorX, scissorY, scissorWidth, scissorHeight);
+      this.renderer.setScissorTest(true);
+      this.renderer.clearDepth();
+      this.renderer.render(this.scene, this.camera);
+    } finally {
+      rendererState.restore();
+    }
   }
 
   dispose() {
@@ -867,4 +885,48 @@ function makeBrokenRing(radius, y, segments = 96) {
 function pseudoRandom(seed) {
   const value = Math.sin(seed * 12.9898) * 43758.5453;
   return value - Math.floor(value);
+}
+
+function createRendererStateSnapshot(renderer) {
+  return {
+    renderTarget: null,
+    activeCubeFace: 0,
+    activeMipmapLevel: 0,
+    viewport: new THREE.Vector4(),
+    scissor: new THREE.Vector4(),
+    clearColor: new THREE.Color(),
+    capture() {
+      this.renderTarget = renderer.getRenderTarget();
+      this.activeCubeFace = renderer.getActiveCubeFace?.() ?? 0;
+      this.activeMipmapLevel = renderer.getActiveMipmapLevel?.() ?? 0;
+      renderer.getViewport(this.viewport);
+      renderer.getScissor(this.scissor);
+      this.scissorTest = renderer.getScissorTest();
+      renderer.getClearColor(this.clearColor);
+      this.clearAlpha = renderer.getClearAlpha();
+      this.autoClear = renderer.autoClear;
+      this.outputColorSpace = renderer.outputColorSpace;
+      this.toneMapping = renderer.toneMapping;
+      this.toneMappingExposure = renderer.toneMappingExposure;
+      this.restored = false;
+      return this;
+    },
+    restore() {
+      if (this.restored) return;
+      this.restored = true;
+      renderer.outputColorSpace = this.outputColorSpace;
+      renderer.toneMapping = this.toneMapping;
+      renderer.toneMappingExposure = this.toneMappingExposure;
+      renderer.setRenderTarget(
+        this.renderTarget,
+        this.activeCubeFace,
+        this.activeMipmapLevel,
+      );
+      renderer.setViewport(this.viewport);
+      renderer.setScissor(this.scissor);
+      renderer.setScissorTest(this.scissorTest);
+      renderer.setClearColor(this.clearColor, this.clearAlpha);
+      renderer.autoClear = this.autoClear;
+    },
+  };
 }
