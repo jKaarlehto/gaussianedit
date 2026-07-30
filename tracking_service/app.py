@@ -6,24 +6,66 @@ import json
 import logging
 import os
 import shutil
+import sys
 import threading
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Iterator
 
 import numpy as np
 import torch
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from PIL import Image
 from scipy import ndimage
 
 LOGGER = logging.getLogger("gaussianedit.tracking")
 LOGGER.setLevel(logging.INFO)
+LOG_ENTRIES: deque[dict[str, Any]] = deque(maxlen=400)
+LOG_LOCK = threading.Lock()
+LOG_SEQUENCE = 0
+
+
+class ServiceLogHandler(logging.Handler):
+    """Retain concise service events for the read-only developer log feed."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        global LOG_SEQUENCE
+        try:
+            message = record.getMessage()
+        except Exception:  # pragma: no cover - logging must never break inference
+            message = "Unable to format service log entry"
+        with LOG_LOCK:
+            LOG_SEQUENCE += 1
+            LOG_ENTRIES.append(
+                {
+                    "sequence": LOG_SEQUENCE,
+                    "time": datetime.fromtimestamp(
+                        record.created,
+                        tz=timezone.utc,
+                    ).isoformat(timespec="milliseconds"),
+                    "level": record.levelname.lower(),
+                    "message": message,
+                }
+            )
+
+
+if not any(
+    isinstance(handler, ServiceLogHandler)
+    for handler in LOGGER.handlers
+):
+    LOGGER.addHandler(ServiceLogHandler())
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-RUNTIME_ROOT = PROJECT_ROOT / ".runtime"
+RUNTIME_ROOT = Path(
+    os.environ.get("GAUSSIANEDIT_RUNTIME_ROOT", PROJECT_ROOT / ".runtime")
+).resolve()
+SERVICE_INSTANCE_TOKEN = os.environ.get("GAUSSIANEDIT_SERVICE_INSTANCE_TOKEN", "")
+REQUIRE_CUDA = os.environ.get("GAUSSIANEDIT_REQUIRE_CUDA", "1") != "0"
 CHECKPOINT_PATH = Path(
     os.environ.get(
         "GAUSSIANEDIT_SAM_CHECKPOINT",
@@ -79,6 +121,15 @@ def _load_model() -> None:
     global predictor, model_status, model_error, model_detail, model_load_started_at
     if not CHECKPOINT_PATH.exists():
         model_status = "waiting-checkpoint"
+        model_detail = f"SAM 3.1 checkpoint is missing: {CHECKPOINT_PATH}"
+        return
+    if REQUIRE_CUDA and not torch.cuda.is_available():
+        model_status = "error"
+        model_error = "CUDA is unavailable in the dedicated SAM 3.1 runtime"
+        model_detail = (
+            "Temporal tracking requires an NVIDIA GPU. "
+            f"The service is running with {sys.executable}."
+        )
         return
     model_status = "loading"
     model_error = ""
@@ -155,14 +206,20 @@ def _load_model() -> None:
         LOGGER.info("SAM 3.1 tracker ready")
     except Exception as error:  # pragma: no cover - depends on CUDA runtime
         model_error = f"{type(error).__name__}: {error}"
-        model_detail = model_error
+        if isinstance(error, ModuleNotFoundError) and error.name == "sam3":
+            model_detail = (
+                "The official SAM 3.1 package is missing from the tracker runtime "
+                f"({sys.executable}). Start GaussianEdit with npm run dev."
+            )
+        else:
+            model_detail = model_error
         model_status = "error"
         LOGGER.exception("SAM 3.1 tracker failed to load")
 
 
 def _start_model_loader() -> None:
     global model_loader
-    if predictor is not None or model_status == "loading":
+    if predictor is not None or model_status in {"loading", "error"}:
         return
     if not CHECKPOINT_PATH.exists():
         return
@@ -209,6 +266,16 @@ def _start_detector_loader() -> None:
 @app.on_event("startup")
 async def startup() -> None:
     SESSION_ROOT.mkdir(parents=True, exist_ok=True)
+    LOGGER.info(
+        "service started pid=%d runtime=%s device=%s",
+        os.getpid(),
+        RUNTIME_ROOT,
+        (
+            torch.cuda.get_device_name(0)
+            if torch.cuda.is_available()
+            else "unavailable"
+        ),
+    )
     _start_model_loader()
 
 
@@ -218,7 +285,7 @@ async def capabilities() -> dict[str, Any]:
     return {
         "temporalTracking": predictor is not None and model_status == "ready",
         "status": model_status,
-        "detail": model_error or model_detail,
+        "detail": model_detail or model_error,
         "loadingForSeconds": (
             round(time.monotonic() - model_load_started_at, 1)
             if model_status == "loading" and model_load_started_at
@@ -234,6 +301,53 @@ async def capabilities() -> dict[str, Any]:
             else "cpu"
         ),
         "completeSequenceRequired": True,
+        "runtime": {
+            "python": sys.executable,
+            "root": str(RUNTIME_ROOT),
+            "processId": os.getpid(),
+            "instanceToken": SERVICE_INSTANCE_TOKEN,
+        },
+    }
+
+
+@app.get("/api/sam-tracking/runtime")
+async def runtime_identity() -> dict[str, Any]:
+    """Cheap identity endpoint used by the dev supervisor before Vite starts."""
+    return {
+        "service": "gaussianedit-sam31",
+        "family": "sam3.1",
+        "python": sys.executable,
+        "runtimeRoot": str(RUNTIME_ROOT),
+        "processId": os.getpid(),
+        "instanceToken": SERVICE_INSTANCE_TOKEN,
+        "cudaAvailable": torch.cuda.is_available(),
+        "device": (
+            torch.cuda.get_device_name(0)
+            if torch.cuda.is_available()
+            else "unavailable"
+        ),
+    }
+
+
+@app.get("/api/sam-tracking/logs")
+async def service_logs(
+    after: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=200),
+) -> dict[str, Any]:
+    """Return bounded service events; this endpoint never reads files or runs commands."""
+    with LOG_LOCK:
+        entries = [
+            dict(entry)
+            for entry in LOG_ENTRIES
+            if entry["sequence"] > after
+        ][:limit]
+        latest = LOG_SEQUENCE
+    return {
+        "entries": entries,
+        "latestSequence": latest,
+        "hasMore": bool(entries and entries[-1]["sequence"] < latest),
+        "processId": os.getpid(),
+        "status": model_status,
     }
 
 

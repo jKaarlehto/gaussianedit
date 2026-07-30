@@ -3,6 +3,64 @@ import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 
+const trackerOrigin = process.env.GAUSSIANEDIT_TRACKER_ORIGIN?.trim();
+const trackerStartupIssue = process.env.GAUSSIANEDIT_TRACKER_STARTUP_ISSUE?.trim();
+
+function unavailableTracker() {
+  return {
+    name: 'unavailable-sam-tracker',
+    configureServer(server) {
+      if (trackerOrigin) return;
+      server.middlewares.use('/api/sam-tracking', (request, response) => {
+        if (request.url?.startsWith('/capabilities')) {
+          response.statusCode = 200;
+          response.setHeader('Content-Type', 'application/json');
+          response.setHeader('Cache-Control', 'no-store');
+          response.end(JSON.stringify({
+            temporalTracking: false,
+            status: 'startup-error',
+            detail: trackerStartupIssue
+              || 'Start the app with npm run dev to launch the SAM 3.1 service.',
+            provider: 'official-meta-sam3',
+            modelId: 'facebook/sam3.1',
+            family: 'sam3.1',
+            device: 'unavailable',
+            completeSequenceRequired: true,
+          }));
+          return;
+        }
+        response.statusCode = 503;
+        response.setHeader('Content-Type', 'application/json');
+        response.end(JSON.stringify({
+          detail: trackerStartupIssue || 'SAM 3.1 tracking service is unavailable',
+        }));
+      });
+      server.middlewares.use('/api/object-detection', (request, response) => {
+        response.setHeader('Content-Type', 'application/json');
+        response.setHeader('Cache-Control', 'no-store');
+        if (request.url?.startsWith('/capabilities')) {
+          response.statusCode = 200;
+          response.end(JSON.stringify({
+            available: false,
+            status: 'startup-error',
+            detail: trackerStartupIssue
+              || 'Start the app with npm run dev to launch the GPU model service.',
+            provider: 'yolo12s-refined',
+            modelId: 'yolo12s.pt',
+            family: 'yolo12',
+            device: 'unavailable',
+          }));
+          return;
+        }
+        response.statusCode = 503;
+        response.end(JSON.stringify({
+          detail: trackerStartupIssue || 'GPU model service is unavailable',
+        }));
+      });
+    },
+  };
+}
+
 function randomDemoPly() {
   let selected = null;
   let filesByName = new Map();
@@ -75,7 +133,7 @@ function randomDemoPly() {
 }
 
 export default defineConfig({
-  plugins: [randomDemoPly()],
+  plugins: [unavailableTracker(), randomDemoPly()],
   server: {
     headers: {
       // Required for SharedArrayBuffer (multi-threaded WASM fallback in onnxruntime-web).
@@ -84,11 +142,11 @@ export default defineConfig({
     },
     proxy: {
       '/api/sam-tracking': {
-        target: 'http://127.0.0.1:8091',
+        target: trackerOrigin || 'http://127.0.0.1:8091',
         changeOrigin: false,
       },
       '/api/object-detection': {
-        target: 'http://127.0.0.1:8091',
+        target: trackerOrigin || 'http://127.0.0.1:8091',
         changeOrigin: false,
       },
     },

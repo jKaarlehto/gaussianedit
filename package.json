@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "dev:web": "vite",
-    "tracker": ".runtime\\sam3-service-venv\\Scripts\\python.exe -m uvicorn tracking_service.app:app --host 127.0.0.1 --port 8091",
+    "tracker": "node scripts/start-tracker.mjs",
+    "test:tracker-runtime": "node scripts/test-tracker-runtime.mjs",
+    "test:tracker-service": "node scripts/test-tracker-service.mjs",
     "test:cutout": "node scripts/test-cutout-buffer.mjs",
     "test:projection-roi": "node scripts/test-projection-roi.mjs",
     "test:mask-abort": "node scripts/test-mask-propagation-abort.mjs",
