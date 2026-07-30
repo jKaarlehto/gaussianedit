@@ -13,6 +13,12 @@ work until the scan path is measured and responsive.
 - [ ] Fix the current-view coordinate contract before any model call: a click
   on the cockpit canvas must land on the identical pixel in the captured 2D
   image, cropped editor, detector guidance, SAM prompt, and Gaussian lift.
+- [ ] Freeze one immutable selection-frame record containing camera matrices,
+  framebuffer size, CSS-to-frame scale, crop transform, color transform, and
+  scene revision. YOLO, SAM, 2D editing, lift, main highlight, and hologram
+  must consume that same record or reject their result as stale.
+- [ ] Make offscreen capture visually identical to the cockpit image: same
+  camera pose, framing, output color space, tone mapping, and orientation.
 - [ ] Bound and time each part of “finishing the visible side”; a front-surface
   mask must not launch an unbounded full-scene growth/refinement pass.
 - [ ] Never apply a synthetic-view visibility mask to the live cockpit
@@ -27,17 +33,17 @@ work until the scan path is measured and responsive.
   cockpit scene for a synthetic camera.
 - [x] Measure cutout construction, per-view sorting, GPU readback, image copy,
   and JPEG encoding separately; expose the last scan timings for diagnostics.
-- [ ] Render the complete ordered view sequence first and feed real thumbnails
-  into a bounded FIFO tray in camera order, so progress advances once per
-  rendered frame without rebuilding or reordering existing items.
+- [ ] Render the complete ordered view sequence first, but present exactly one
+  active FIFO evidence transaction at a time. Never show a gallery row or empty
+  placeholder thumbnails.
 - [ ] Submit that fixed sequence once to the GPU SAM 3 service; keep the main
   renderer and controls free while inference runs and provide one Cancel action.
-- [ ] As each tracked mask returns, replace its own view thumbnail in place,
-  hold the mask briefly so the user can read it, then animate its mask evidence
-  as particles flying from that tray slot into the 3D hologram.
-- [ ] Remove a FIFO item only after its particle transfer has completed and its
-  evidence has been fused. The tray order and count must always explain which
-  rendered views are waiting, masked, transferring, or finished.
+- [ ] For the active FIFO item, show the real RGB view first, then the real
+  tracked mask beside it. Slide them together, overlap them, and flash the
+  accepted masked area exactly twice before any transfer begins.
+- [ ] Animate only the accepted mask evidence as particles flying from the
+  overlapped thumbnail into the 3D hologram. Remove the pair after transfer and
+  fusion complete, then advance the next queued view.
 - [ ] Ensure cancel/restart releases cutout buffers, staged image blobs, backend
   sessions, and stale masks immediately.
 
@@ -77,6 +83,20 @@ work until the scan path is measured and responsive.
 
 ### Queued immediately after the renderer
 
+- [ ] Add one stable top-level stage rail that never changes vocabulary:
+  `Select visible side` → `Scan all sides` → `Fix if needed` → `Dock object`.
+- [ ] Under `Scan all sides`, show independently monotonic real-unit progress:
+  `Rendering n/m`, `Tracking n/m`, and `Adding to 3D n/m`. Do not collapse
+  these into a vague percentage or switch the main stage label per subtask.
+- [ ] Delete the generic `Review` stage and status everywhere. When the system
+  is checking identity or consistency, say `Checking object match` and proceed
+  automatically. When a genuinely ambiguous result requires the person, pause
+  under `Fix if needed`, label it `Your decision`, explain the uncertainty in
+  one sentence, and show concrete Keep/Skip/Edit actions.
+- [ ] Keep actor ownership explicit in every status: app actions use active
+  verbs (`Rendering`, `Tracking`, `Adding to 3D`); user gates say `Your
+  decision`; technical failures say what failed and whether the app skipped or
+  stopped. Never use `review`, `processing`, or `working` without an actor.
 - [ ] Remove the stale “Selection click queued” work item. Retain only the most
   recent click briefly while its exact settled projection finishes encoding,
   with plain user-facing status.
