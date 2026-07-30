@@ -260,6 +260,14 @@ const frame = makeRgbFrame(132, 76, [24, 96, 180, 255]);
 const nextFrame = makeRgbFrame(132, 76, [180, 70, 32, 255]);
 const mask = new Uint8Array([0, 1, 1, 0]);
 
+tray.begin({ id: 'pending', total: 3, pending: true });
+assert.equal(
+  root.status.textContent,
+  'Rendering 1 / 3 · queued',
+  'confirmed scans expose immediate real-unit progress while startup is pending',
+);
+tray.cancel();
+
 tray.begin({ id: 'scan-1', total: 2 });
 tray.rendered({ id: 'view-1', label: 'Right side', canvas: frame });
 tray.rendered({ id: 'view-2', label: 'Left side', canvas: nextFrame });

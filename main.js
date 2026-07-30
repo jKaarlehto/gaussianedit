@@ -31,7 +31,10 @@ import {
   offsetMask,
   paintMask,
 } from './maskTools.js';
-import { ObjectPreview } from './objectPreview.js';
+import {
+  ObjectPreview,
+  createObjectPreviewMotionState,
+} from './objectPreview.js';
 import { HudEffects } from './hudEffects.js';
 import { ClassicRegionProposer } from './classicProposals.js';
 import { SegmentDock } from './segmentDock.js';
@@ -39,8 +42,46 @@ import { ScanTray } from './scanTray.js';
 import {
   analyzeSelectedObject,
   generateSyntheticOrbitViews,
+  inspectSyntheticClipPlanes,
   syntheticViewSet,
 } from './syntheticViews.js';
+import {
+  analyzeRgbaFrame,
+  assertOverlayAfterCockpit,
+  beginVisibleFrameTransaction,
+  inspectCaptureDimensions,
+  markCockpitRendered,
+} from './renderContracts.js';
+import { updateTargetingSources } from './targetingState.js';
+import {
+  confirmVisibleObject,
+  consumeVisibleObjectStart,
+  createVisibleObjectGate,
+  createVisibleObjectRevision,
+  invalidateVisibleObjectGate,
+  isVisibleObjectConfirmed,
+  publishVisibleObjectCandidate,
+  resetVisibleObjectStart,
+} from './visibleObjectGate.js';
+import {
+  WorkspaceController,
+} from './workspaceState.js';
+import {
+  BUFFER_PREVIEW_IDS,
+  createBufferPreviewStore,
+} from './bufferPreviewStore.js';
+import {
+  ESCAPE_ACTIONS,
+  resolveEscapeAction,
+} from './workspaceEscape.js';
+import {
+  captureBoxToProjection,
+  planSelectionEditorCapture,
+  projectionClientPointToMask,
+  projectionOverlayIsCurrent,
+  projectionTargetingOverlaysVisible,
+  SELECTION_FRAME_CANVAS_COLOR_SPACE,
+} from './projectionBuffer.js';
 import {
   analyzeSceneFrame,
   buildSceneQualityMask,
@@ -65,16 +106,18 @@ import {
 } from './multiviewRefinement.js';
 import {
   assertSelectionFrame,
-  capturePointToMask,
   clientPointToCapture,
   createSelectionFrame,
   framebufferPointToCapture,
+  selectionAlignmentStatus,
+  selectionReturnPreflight,
   viewMatricesMatch,
 } from './selectionFrame.js';
+import { positionRetargetHud } from './retargetHud.js';
 
-const SAM_INPUT_MAX = 1024; // longest side handed to the encoder
 const SAM_TRACKING_NATIVE = 832; // browser capture; SAM 3.1 resizes internally
 const MAX_STAGED_TRACKING_BYTES = 128 * 1024 * 1024;
+const FALLBACK_CAPTURE_MAX_POINTS = 240_000;
 const VIEW_SETTLE_MS = 280;
 
 // ---------------------------------------------------------------- scene ----
@@ -141,7 +184,34 @@ function createSharedRendererStateSnapshot(targetRenderer) {
   };
 }
 const selectionCaptureRendererState = createSharedRendererStateSnapshot(renderer);
-const refinementCaptureRendererState = createSharedRendererStateSnapshot(renderer);
+const visibleAuditViewport = new THREE.Vector4();
+const visibleAuditScissor = new THREE.Vector4();
+const visibleAuditSize = new THREE.Vector2();
+const visibleAuditClearColor = new THREE.Color();
+const visibleOutputState = {
+  outputColorSpace: renderer.outputColorSpace,
+  toneMapping: renderer.toneMapping,
+  toneMappingExposure: renderer.toneMappingExposure,
+};
+const visibleRendererDiagnostics = {
+  frames: 0,
+  recoveries: 0,
+  targetCorruptions: 0,
+  rectangleCorruptions: 0,
+  outputStateCorruptions: 0,
+  sourceVisibilityRecoveries: 0,
+  sourceNotReadyFrames: 0,
+  sourceSortRunningFrames: 0,
+  presentationViolations: 0,
+  overlayFailures: 0,
+  objectPreviewDisabled: false,
+  hudEffectsDisabled: false,
+  lastRecovery: null,
+  lastOverlayError: null,
+  source: {},
+};
+let objectPreviewPassEnabled = true;
+let hudEffectsPassEnabled = true;
 
 function prepareVisibleRendererState() {
   renderer.setRenderTarget(null);
@@ -153,6 +223,136 @@ function prepareVisibleRendererState() {
   renderer.setScissorTest(false);
   renderer.setClearColor(0x000000, 1);
   renderer.autoClear = true;
+  renderer.outputColorSpace = visibleOutputState.outputColorSpace;
+  renderer.toneMapping = visibleOutputState.toneMapping;
+  renderer.toneMappingExposure = visibleOutputState.toneMappingExposure;
+}
+
+function auditVisibleRendererState(phase) {
+  renderer.getSize(visibleAuditSize);
+  renderer.getViewport(visibleAuditViewport);
+  renderer.getScissor(visibleAuditScissor);
+  renderer.getClearColor(visibleAuditClearColor);
+  const targetCorrupt = renderer.getRenderTarget() !== null;
+  const rectangleCorrupt = renderer.getScissorTest()
+    || visibleAuditViewport.x !== 0
+    || visibleAuditViewport.y !== 0
+    || visibleAuditViewport.z !== visibleAuditSize.x
+    || visibleAuditViewport.w !== visibleAuditSize.y
+    || visibleAuditScissor.x !== 0
+    || visibleAuditScissor.y !== 0
+    || visibleAuditScissor.z !== visibleAuditSize.x
+    || visibleAuditScissor.w !== visibleAuditSize.y;
+  const outputStateCorrupt = !renderer.autoClear
+    || renderer.getClearAlpha() !== 1
+    || visibleAuditClearColor.r !== 0
+    || visibleAuditClearColor.g !== 0
+    || visibleAuditClearColor.b !== 0
+    || renderer.outputColorSpace !== visibleOutputState.outputColorSpace
+    || renderer.toneMapping !== visibleOutputState.toneMapping
+    || renderer.toneMappingExposure !== visibleOutputState.toneMappingExposure;
+  const sourceObject = state.splat?.object3D;
+  const sourceViewer = state.splat?.viewer?.viewer;
+  const sourceMesh = sourceViewer?.splatMesh ?? sourceObject?.splatMesh;
+  const sourceInvisible = Boolean(
+    sourceObject && (sourceObject.visible === false || sourceMesh?.visible === false),
+  );
+
+  visibleRendererDiagnostics.frames++;
+  if (targetCorrupt) visibleRendererDiagnostics.targetCorruptions++;
+  if (rectangleCorrupt) visibleRendererDiagnostics.rectangleCorruptions++;
+  if (outputStateCorrupt) visibleRendererDiagnostics.outputStateCorruptions++;
+  if (sourceInvisible) visibleRendererDiagnostics.sourceVisibilityRecoveries++;
+  if (sourceViewer?.splatRenderReady === false) {
+    visibleRendererDiagnostics.sourceNotReadyFrames++;
+  }
+  if (sourceViewer?.sortRunning) visibleRendererDiagnostics.sourceSortRunningFrames++;
+  visibleRendererDiagnostics.source.objectVisible = sourceObject?.visible ?? null;
+  visibleRendererDiagnostics.source.splatVisible = sourceMesh?.visible ?? null;
+  visibleRendererDiagnostics.source.renderReady = sourceViewer?.splatRenderReady ?? null;
+  visibleRendererDiagnostics.source.sortRunning = sourceViewer?.sortRunning ?? null;
+  visibleRendererDiagnostics.source.splatCount = sourceMesh?.getSplatCount?.() ?? 0;
+
+  if (!targetCorrupt && !rectangleCorrupt && !outputStateCorrupt && !sourceInvisible) {
+    return true;
+  }
+  visibleRendererDiagnostics.recoveries++;
+  visibleRendererDiagnostics.lastRecovery = {
+    phase,
+    at: performance.now(),
+    targetCorrupt,
+    rectangleCorrupt,
+    outputStateCorrupt,
+    sourceInvisible,
+  };
+  prepareVisibleRendererState();
+  if (sourceObject) sourceObject.visible = true;
+  if (sourceMesh) {
+    sourceMesh.visible = true;
+    sourceMesh.frustumCulled = false;
+  }
+  return false;
+}
+
+function recoverVisibleScene(reason, {
+  forceSort = false,
+  clearTemporaryHidden = false,
+} = {}) {
+  prepareVisibleRendererState();
+  const sourceObject = state.splat?.object3D;
+  const sourceViewer = state.splat?.viewer?.viewer;
+  const sourceMesh = sourceViewer?.splatMesh ?? sourceObject?.splatMesh;
+  if (clearTemporaryHidden) state.splat?.clearTemporaryHiddenSplats?.();
+  if (sourceObject) sourceObject.visible = true;
+  if (sourceMesh) {
+    sourceMesh.visible = true;
+    sourceMesh.frustumCulled = false;
+  }
+  camera.updateMatrixWorld(true);
+  if (sourceViewer) {
+    sourceViewer.updateForDropInMode?.(renderer, camera);
+    sourceViewer.update?.(renderer, camera);
+    if (forceSort && !sourceViewer.sortRunning) {
+      sourceViewer.runSplatSort?.(true, true)?.catch?.((error) => {
+        console.warn('[renderer] visible source recovery sort failed', error);
+      });
+    }
+  }
+  lastRenderedFrameAt = 0;
+  visibleRendererDiagnostics.recoveries++;
+  visibleRendererDiagnostics.lastRecovery = {
+    phase: reason,
+    at: performance.now(),
+    forcedSort: forceSort,
+    clearedTemporaryHidden: clearTemporaryHidden,
+  };
+}
+
+function renderGuardedOverlay(name, overlay, now, transaction) {
+  try {
+    assertOverlayAfterCockpit(transaction, name);
+    overlay.render(now);
+  } catch (error) {
+    if (!transaction?.cockpitRendered) {
+      visibleRendererDiagnostics.presentationViolations++;
+    }
+    visibleRendererDiagnostics.overlayFailures++;
+    visibleRendererDiagnostics.lastOverlayError = {
+      name,
+      at: performance.now(),
+      errorName: error?.name ?? 'Error',
+      message: error?.message ?? String(error),
+    };
+    if (name === 'object-preview') {
+      objectPreviewPassEnabled = false;
+      visibleRendererDiagnostics.objectPreviewDisabled = true;
+    } else {
+      hudEffectsPassEnabled = false;
+      visibleRendererDiagnostics.hudEffectsDisabled = true;
+    }
+    prepareVisibleRendererState();
+    console.error(`[renderer] disabled corrupt ${name} pass`, error);
+  }
 }
 
 const scene = new THREE.Scene();
@@ -205,6 +405,7 @@ addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
+  positionVisibleObjectConfirmation();
   invalidateEncoding();
 });
 
@@ -213,6 +414,7 @@ addEventListener('resize', () => {
 const ui = {
   status: document.getElementById('status'),
   hint: document.getElementById('hint'),
+  viewfinderCue: document.getElementById('viewfinderCue'),
   count: document.getElementById('count'),
   total: document.getElementById('total'),
   drop: document.getElementById('drop'),
@@ -232,13 +434,29 @@ const ui = {
   projectionSeedsToggle: document.getElementById('projectionSeedsToggle'),
   projectionEditorOpen: document.getElementById('projectionEditorOpen'),
   projectionEditorBack: document.getElementById('projectionEditorBack'),
+  maskWorkspaceCard: document.getElementById('maskWorkspaceCard'),
+  maskWorkspaceCardCanvas: document.getElementById('maskWorkspaceCardCanvas'),
+  maskWorkspaceCardStatus: document.getElementById('maskWorkspaceCardStatus'),
   selectionOutline: document.getElementById('selectionOutline'),
   brushCursor: document.getElementById('brushCursor'),
   detectorSuggestionLabel: document.getElementById('detectorSuggestionLabel'),
   detectorSuggestionName: document.getElementById('detectorSuggestionName'),
   detectorSuggestionScore: document.getElementById('detectorSuggestionScore'),
+  visibleObjectGate: document.getElementById('visibleObjectGate'),
+  visibleObjectCount: document.getElementById('visibleObjectCount'),
+  confirmVisibleObject: document.getElementById('confirmVisibleObject'),
+  editVisibleObjectMask: document.getElementById('editVisibleObjectMask'),
+  newTargetGate: document.getElementById('newTargetGate'),
+  replaceTarget: document.getElementById('replaceTarget'),
+  cancelReplaceTarget: document.getElementById('cancelReplaceTarget'),
+  selectionAlignmentGate: document.getElementById('selectionAlignmentGate'),
+  recaptureTarget: document.getElementById('recaptureTarget'),
   objectHintHud: document.getElementById('objectHintHud'),
   openSelectionSetup: document.getElementById('openSelectionSetup'),
+  targetingSetup: document.getElementById('targetingSetup'),
+  targetingSetupState: document.getElementById('targetingSetupState'),
+  targetingMethodHint: document.getElementById('targetingMethodHint'),
+  preselectionOptions: document.getElementById('preselectionOptions'),
   encodingCue: document.getElementById('encodingCue'),
   encodingCueTitle: document.getElementById('encodingCueTitle'),
   encodingCueDetail: document.getElementById('encodingCueDetail'),
@@ -246,6 +464,7 @@ const ui = {
   encodingCursorLabel: document.getElementById('encodingCursorLabel'),
   selectionProps: document.getElementById('selectionProps'),
   selectionResult: document.getElementById('selectionResult'),
+  activeWorkspaceTitle: document.getElementById('activeWorkspaceTitle'),
   selectionMeta: document.getElementById('selectionMeta'),
   componentSizeRow: document.getElementById('componentSizeRow'),
   autoProps: document.getElementById('autoProps'),
@@ -257,6 +476,11 @@ const ui = {
   objectPreviewCanvas: document.getElementById('objectPreviewCanvas'),
   objectPreviewEmpty: document.getElementById('objectPreviewEmpty'),
   objectPreviewStatus: document.getElementById('objectPreviewStatus'),
+  objectWorkspaceCard: document.getElementById('objectWorkspaceCard'),
+  objectWorkspaceCardCanvas: document.getElementById('objectWorkspaceCardCanvas'),
+  objectWorkspaceCardStatus: document.getElementById('objectWorkspaceCardStatus'),
+  maskWorkspaceControlHost: document.getElementById('maskWorkspaceControlHost'),
+  objectWorkspaceControlHost: document.getElementById('objectWorkspaceControlHost'),
   previewRefineInside: document.getElementById('previewRefineInside'),
   undoPreview: document.getElementById('undoPreview'),
   keepPreview: document.getElementById('keepPreview'),
@@ -290,8 +514,8 @@ const ui = {
   multiviewEdit: document.getElementById('editMultiview'),
   suggestionsToggle: document.getElementById('suggestionsToggle'),
   scanTray: document.getElementById('scanTray'),
-  viewfinderMode: document.getElementById('viewfinderMode'),
-  selectionMode: document.getElementById('selectionMode'),
+  sceneFlightToggle: document.getElementById('sceneFlightToggle'),
+  exploreSelectionContext: document.getElementById('exploreSelectionContext'),
   exploreExitHud: document.getElementById('exploreExitHud'),
   exploreExitDetail: document.getElementById('exploreExitDetail'),
   exploreSpeed: document.getElementById('exploreSpeed'),
@@ -302,6 +526,11 @@ const ui = {
   qualityFilterToggle: document.getElementById('qualityFilterToggle'),
   originToggle: document.getElementById('originToggle'),
   gpuAdapter: document.getElementById('gpuAdapter'),
+  workspaceStack: document.getElementById('workspaceStack'),
+  workspaceMainHost: document.getElementById('workspaceMainHost'),
+  workspaceCardParking: document.getElementById('workspaceCardParking'),
+  workspaceButtons: [...document.querySelectorAll('[data-workspace-target]')],
+  sceneWorkspaceState: document.getElementById('sceneWorkspaceState'),
   focusRefineHud: document.getElementById('focusRefineHud'),
   focusRefinePath: document.getElementById('focusRefinePath'),
   focusRefineDetail: document.getElementById('focusRefineDetail'),
@@ -395,6 +624,7 @@ const state = {
   gaussianCleanupUndo: null,
   manualExcluded: new Set(),
   active: null,      // latest editable selection operation
+  configuredSources: new Set(['auto']),
   extent: 'suggested',
   fillThreshold: 18,
   screenRadius: 5,
@@ -411,6 +641,7 @@ const state = {
   busyReason: '',
   pendingSelection: null,
   exploration: false,
+  sceneFlying: false,
   explorationSpeed: 1,
   sceneFrame: null,
   automaticHome: null,
@@ -435,6 +666,7 @@ const state = {
   maskOffset: 0,
   boundarySoftness: 4,
   selectionOpacity: 0.9,
+  exploreSelectionContext: true,
   nearbyRadius: 0,
   removeDisconnected: false,
   componentSize: 24,
@@ -462,6 +694,9 @@ const state = {
     restoringView: false,
   },
 };
+const bufferPreviewStore = createBufferPreviewStore();
+let objectDisplayMode = 'confidence';
+const workspaceController = new WorkspaceController('scene');
 let activeSelectionTimer = 0;
 let encodingRippleStartedAt = 0;
 let encodingCueRevealTimer = 0;
@@ -478,6 +713,25 @@ let changeDiffHideTimer = 0;
 let nextDockSegmentId = 1;
 const workJobs = new Map();
 let workPanelHideTimer = 0;
+let projectionEditorRestartScan = false;
+let viewfinderCueTimer = 0;
+
+function showViewfinderCue(text, duration = 0) {
+  clearTimeout(viewfinderCueTimer);
+  ui.viewfinderCue.textContent = text;
+  ui.viewfinderCue.dataset.visible = String(state.exploration);
+  if (duration > 0) {
+    viewfinderCueTimer = setTimeout(() => {
+      ui.viewfinderCue.dataset.visible = 'false';
+    }, duration);
+  }
+}
+
+function hideViewfinderCue() {
+  clearTimeout(viewfinderCueTimer);
+  ui.viewfinderCue.dataset.visible = 'false';
+}
+
 const viewfinder = new ViewfinderControls({
   camera,
   orbitControls: controls,
@@ -492,6 +746,13 @@ const viewfinder = new ViewfinderControls({
     ui.exploreExitDetail.textContent = locked
       ? 'click to freeze this view'
       : 'click the scene for mouse look';
+    if (!state.exploration) {
+      hideViewfinderCue();
+    } else if (locked) {
+      showViewfinderCue('Click to freeze view', 1500);
+    } else {
+      showViewfinderCue('Click scene to continue flying');
+    }
   },
 });
 
@@ -529,54 +790,241 @@ function applyNavigationPose(pose, detail = 'Camera moved to Home.') {
   markViewDirty({ force: true, detail });
 }
 
-function setExplorationMode(enabled) {
-  const next = Boolean(enabled && state.splat);
-  if (next === state.exploration) return;
-  state.exploration = next;
-  document.body.dataset.exploration = String(next);
-  ui.viewfinderMode.setAttribute('aria-pressed', String(next));
-  ui.selectionMode.setAttribute('aria-pressed', String(!next));
-  ui.hint.innerHTML = next
-    ? 'Mouse look · click to freeze this view. <kbd>W/A/S/D</kbd> fly · <kbd>Q/E</kbd> turn · <kbd>Tab</kbd> switches modes.'
-    : 'Click an object to select it. <kbd>Shift</kbd>+click removes. <kbd>Tab</kbd> opens Viewfinder.';
-  viewfinder.setActive(next);
+function workspaceContext() {
+  return {
+    sceneLoaded: Boolean(state.splat),
+    sceneFlying: state.exploration,
+    hasDraft: Boolean(state.active),
+    frameReady: Boolean(state.frozen?.frame && capture.width && capture.height),
+    maskReady: Boolean(state.active?.currentMask),
+    maskWidth: state.active?.maskW ?? 0,
+    maskHeight: state.active?.maskH ?? 0,
+    selectionCount: state.selection.size,
+  };
+}
 
-  if (next) {
-    clearTimeout(automaticMultiviewTimer);
-    const session = state.multiview.session;
-    if (session) {
-      session.canceled = true;
-      finishMultiviewSession(session, 'Object scan stopped for exploration');
-    }
-    viewRevision++;
-    lastViewChangeAt = performance.now();
-    clearTimeout(encodeTimer);
-    encodeQueued = false;
-    pendingModelViewEncode = null;
-    state.pendingSelection = null;
-    state.encoded = false;
-    clearObjectSuggestions();
-    setGaussianCleanup(false);
-    if (state.highlight?.points) state.highlight.points.visible = false;
-    renderer.domElement.dataset.selectionState = 'exploring';
-    setStatus('exploring', 'ready');
+function currentInputOwner() {
+  return workspaceController.derive(workspaceContext()).inputOwner;
+}
+
+function syncExploreSelectionContext() {
+  const show = Boolean(
+    state.exploration
+    && state.exploreSelectionContext
+    && state.selection.size
+    && state.highlight?.points,
+  );
+  ui.exploreSelectionContext.setAttribute(
+    'aria-pressed',
+    String(state.exploreSelectionContext),
+  );
+  ui.exploreSelectionContext.disabled = !state.selection.size;
+  if (!state.exploration) {
+    ui.sceneFlightToggle.textContent = state.active ? 'Unlock and fly' : 'Explore scene';
+  }
+  if (!state.highlight?.points) return;
+  state.highlight.points.visible = state.exploration ? show : true;
+  state.highlight.setContextAppearance(state.exploration && show);
+}
+
+function syncWorkspaceStack() {
+  const workspace = workspaceController.derive(workspaceContext());
+  const cards = {
+    scene: document.getElementById('sceneWorkspaceCard'),
+    mask: ui.maskWorkspaceCard,
+    object: ui.objectWorkspaceCard,
+  };
+  for (const button of ui.workspaceButtons) {
+    const workspaceId = button.dataset.workspaceTarget;
+    button.disabled = false;
+    button.dataset.ready = String(workspace.available[workspaceId]);
+    button.setAttribute(
+      'aria-current',
+      workspaceId === workspaceController.active ? 'page' : 'false',
+    );
+  }
+  ui.sceneWorkspaceState.textContent = workspace.status.scene;
+  ui.maskWorkspaceCard.dataset.ready = String(workspace.available.mask);
+  ui.objectWorkspaceCard.dataset.ready = String(workspace.available.object);
+  ui.maskWorkspaceCard.setAttribute('aria-disabled', 'false');
+  ui.objectWorkspaceCard.setAttribute('aria-disabled', 'false');
+  workspace.postcardIds.forEach((postcardId, index) => {
+    const card = cards[postcardId];
+    card.dataset.deck = 'true';
+    card.dataset.workspaceCard = postcardId;
+    card.setAttribute('aria-current', 'false');
+    card.style.zIndex = String(20 - index);
+    ui.workspaceStack.append(card);
+  });
+  const activeCard = cards[workspace.active];
+  activeCard.dataset.deck = 'false';
+  activeCard.dataset.workspaceCard = workspace.active;
+  activeCard.setAttribute('aria-current', 'page');
+  ui.workspaceStack.append(activeCard);
+  document.body.dataset.workspace = workspace.active;
+  document.body.dataset.inputOwner = workspace.inputOwner;
+  document.body.dataset.drawerOwner = workspace.drawerOwner;
+}
+
+function setWorkspace(requested, {
+  requestPointerLock = false,
+  returnPrevious = false,
+} = {}) {
+  const transition = returnPrevious
+    ? workspaceController.returnPrevious(workspaceContext())
+    : workspaceController.activate(requested, workspaceContext());
+  const next = transition.active;
+  if (transition.changed) {
+    objectPreview.releaseHover();
+    objectCardPreview.releaseHover();
+  }
+  if (next !== 'scene') cancelTargetReplacement();
+  if (!returnPrevious && requested !== next) {
+    syncWorkspaceStack();
+    return;
+  }
+  if (!transition.changed && next !== 'scene') {
+    syncWorkspaceStack();
     return;
   }
 
-  if (state.highlight?.points) state.highlight.points.visible = true;
-  renderSelectionState();
-  renderer.domElement.dataset.selectionState = 'idle';
-  invalidateEncoding('Exploration finished · preparing this settled view for selection.');
+  const restoreSceneFlight = state.sceneFlying;
+  if (next !== 'scene' && state.exploration) {
+    setExplorationMode(false, { activateWorkspace: false });
+    state.sceneFlying = restoreSceneFlight;
+  }
+  if (next === 'scene' && state.active) state.sceneFlying = false;
+  document.body.dataset.workspace = next;
+  ui.selectionProps.hidden = false;
+  document.body.dataset.inspector = 'true';
+  ui.activeWorkspaceTitle.textContent = next === 'mask'
+    ? '2D mask'
+    : next === 'object'
+      ? '3D object'
+      : 'Camera';
+
+  if (next === 'mask') {
+    setProjectionEditorOpen(true);
+  } else {
+    if (state.projectionEditorOpen) setProjectionEditorOpen(false);
+  }
+
+  if (next === 'scene' && state.sceneFlying && !state.exploration) {
+    setExplorationMode(true, { activateWorkspace: false });
+    if (requestPointerLock) viewfinder.requestLock();
+  }
+  ui.hint.textContent = next === 'object'
+    ? 'Drag to orbit · wheel zooms · Tab cycles workspaces.'
+    : next === 'mask'
+      ? 'Edit this captured mask · Tab cycles workspaces.'
+      : state.exploration
+        ? 'Scene flight owns mouse and movement keys · Tab cycles workspaces.'
+        : 'Click an object in this frozen view · Tab cycles workspaces.';
+  syncWorkspaceStack();
+  syncTargetingOverlayVisibility();
+  syncVisibleObjectConfirmation();
+  lastRenderedFrameAt = 0;
 }
 
-ui.viewfinderMode.addEventListener('click', (event) => {
-  event.currentTarget.blur();
-  setExplorationMode(true);
-  viewfinder.requestLock();
+ui.workspaceButtons.forEach((button) => {
+  button.addEventListener('click', () => {
+    const target = button.dataset.workspaceTarget;
+    setWorkspace(target, { requestPointerLock: target === 'scene' });
+  });
 });
-ui.selectionMode.addEventListener('click', (event) => {
+
+function setExplorationMode(enabled, { activateWorkspace = true } = {}) {
+  const next = Boolean(enabled && state.splat);
+  if (next) cancelTargetReplacement();
+  if (next === state.exploration) return;
+  state.exploration = next;
+  state.sceneFlying = next;
+  if (activateWorkspace) {
+    const transition = workspaceController.activateScene();
+    if (transition.changed) {
+      objectPreview.releaseHover();
+      objectCardPreview.releaseHover();
+    }
+  }
+  document.body.dataset.workspace = workspaceController.active;
+  ui.selectionProps.hidden = false;
+  document.body.dataset.inspector = 'true';
+  ui.activeWorkspaceTitle.textContent = 'Camera';
+  document.body.dataset.exploration = String(next);
+  ui.sceneFlightToggle.setAttribute('aria-pressed', String(next));
+  ui.sceneFlightToggle.textContent = next
+    ? 'Freeze selection view'
+    : state.active ? 'Unlock and fly' : 'Explore scene';
+  ui.hint.textContent = next
+    ? 'Scene flight owns mouse and movement keys · Tab cycles workspaces.'
+    : 'Click an object in this frozen view · Tab cycles workspaces.';
+  viewfinder.setActive(next);
+  syncSelectionInspector();
+
+  if (next) {
+    showViewfinderCue(
+      'Click scene to fly · W A S D move · Q E turn · Tab cycles workspaces',
+    );
+    clearTimeout(automaticMultiviewTimer);
+    const session = state.multiview.session;
+    if (session) {
+      ui.multiviewStatus.textContent =
+        'All-sides scan continues in the background while Scene owns the viewport';
+    }
+    lastViewChangeAt = performance.now();
+    if (!state.active && !session) {
+      viewRevision++;
+      clearTimeout(encodeTimer);
+      encodeQueued = false;
+      pendingModelViewEncode = null;
+      state.encoded = false;
+    }
+    state.pendingSelection = null;
+    clearObjectSuggestions();
+    setGaussianCleanup(false);
+    syncExploreSelectionContext();
+    renderer.domElement.dataset.selectionState = 'exploring';
+    setStatus('exploring', 'ready');
+    // Viewfinder is the recovery path for the visible scene: stop every
+    // selection-only pass, clear any diagnostic reveal mask, and rebind/sort
+    // the source viewer for the live camera.
+    recoverVisibleScene('viewfinder-enter', {
+      forceSort: true,
+      clearTemporaryHidden: true,
+    });
+    syncWorkspaceStack();
+    return;
+  }
+
+  hideViewfinderCue();
+  keys.clear();
+  renderSelectionState();
+  syncExploreSelectionContext();
+  renderer.domElement.dataset.selectionState = 'idle';
+  recoverVisibleScene('viewfinder-exit', { forceSort: true });
+  if (state.active || state.multiview.session) {
+    state.encoded = Boolean(state.active?.frame && state.frozen?.frame === state.active.frame);
+    setSelectionReadiness(state.encoded ? 'ready' : 'idle');
+    syncSelectionInspector();
+    syncVisibleObjectConfirmation();
+    setStatus(state.multiview.session ? 'scanning all sides' : 'draft restored', 'ready');
+    syncWorkspaceStack();
+    return;
+  }
+  invalidateEncoding('Exploration finished · preparing this settled view for selection.');
+  syncWorkspaceStack();
+}
+
+ui.sceneFlightToggle.addEventListener('click', (event) => {
   event.currentTarget.blur();
-  setExplorationMode(false);
+  const startFlying = !state.exploration;
+  setExplorationMode(startFlying);
+  if (startFlying) viewfinder.requestLock();
+});
+ui.exploreSelectionContext.addEventListener('click', () => {
+  state.exploreSelectionContext = !state.exploreSelectionContext;
+  syncExploreSelectionContext();
+  lastRenderedFrameAt = 0;
 });
 ui.exploreExitHud.addEventListener('click', (event) => {
   event.currentTarget.blur();
@@ -627,10 +1075,18 @@ ui.originToggle.addEventListener('click', () => {
   ui.originToggle.textContent = state.originVisible ? 'Hide origin' : 'Show origin';
 });
 
+const objectPreviewMotion = createObjectPreviewMotionState();
+let objectCardHasValidPreview = false;
 const objectPreview = new ObjectPreview(renderer, ui.objectPreviewCanvas, {
+  motionState: objectPreviewMotion,
   onStats(stats) {
-    ui.objectPreviewStatus.textContent = stats.total ? previewStatusText(stats) : 'nothing selected';
-    ui.objectPreviewEmpty.hidden = stats.total > 0;
+    const snapshot = publishObjectPreviewModel(stats);
+    const total = snapshot?.counts.total ?? stats.total;
+    ui.objectPreviewStatus.textContent = total
+      ? `${total.toLocaleString()} SPLATS`
+      : 'EMPTY';
+    ui.objectPreviewStatus.title = total ? previewStatusText(stats) : 'EMPTY';
+    ui.objectPreviewEmpty.hidden = total > 0;
     ui.previewLegendStrong.hidden = !stats.confirmed;
     ui.previewLegendReview.hidden = !stats.provisional;
     ui.previewLegendProtected.hidden = !stats.locked;
@@ -640,8 +1096,112 @@ const objectPreview = new ObjectPreview(renderer, ui.objectPreviewCanvas, {
   onBrushStart: beginGaussianCleanupStroke,
   onBrush: removeGaussianCleanupIndices,
   onBrushEnd: finishGaussianCleanupStroke,
-  onSurfacePick: focusCameraFromPreviewSurface,
+  onSurfacePick: (selection) => {
+    if (workspaceController.active !== 'object') focusCameraFromPreviewSurface(selection);
+  },
 });
+const objectCardPreview = new ObjectPreview(renderer, ui.objectWorkspaceCardCanvas, {
+  trackHistory: false,
+  motionState: objectPreviewMotion,
+  onStats(stats) {
+    const stored = bufferPreviewStore.read(BUFFER_PREVIEW_IDS.OBJECT);
+    const total = Math.max(
+      stats.total,
+      stored?.counts.total ?? 0,
+      state.selection.size,
+    );
+    ui.objectWorkspaceCardStatus.textContent = total
+      ? `${total.toLocaleString()} SPLATS`
+      : 'EMPTY';
+    ui.objectWorkspaceCardStatus.title = total
+      ? `CONFIDENCE · ${total.toLocaleString()} selected splats`
+      : 'CONFIDENCE · EMPTY';
+  },
+});
+objectPreview.setPresentation('main');
+objectCardPreview.setPresentation('card');
+const objectPreviewLayer = {
+  render(now) {
+    objectPreview.render(now);
+    objectCardPreview.render(now);
+  },
+};
+
+function currentBufferPreviewRevision() {
+  if (!state.splat) return null;
+  const tuple = [
+    Math.max(0, sceneContentRevision),
+    Math.max(0, state.active?.viewRevision ?? viewRevision),
+    Math.max(0, state.active?.maskRevision ?? 0),
+    Math.max(0, state.active?.selectionRevision ?? 0),
+  ];
+  return Object.freeze({
+    tuple: Object.freeze(tuple),
+    key: tuple.join(':'),
+  });
+}
+
+function publishObjectPreviewModel(stats) {
+  const revision = currentBufferPreviewRevision();
+  if (!revision) return null;
+  return bufferPreviewStore.publish({
+    bufferId: BUFFER_PREVIEW_IDS.OBJECT,
+    revision,
+    status: stats.total ? 'READY' : 'EMPTY',
+    counts: {
+      selected: stats.total,
+      total: stats.total,
+      confirmed: stats.confirmed,
+      provisional: stats.provisional,
+      locked: stats.locked,
+      sampled: stats.sampled,
+    },
+    displayMode: objectDisplayMode,
+    render: {
+      source: {
+        kind: 'bounded-confidence-particles',
+        sampled: stats.sampled,
+      },
+      payload: null,
+      bytes: 0,
+    },
+  });
+}
+
+function updateObjectPreviewSurfaces(payload) {
+  objectPreview.update(payload);
+  if (payload?.selection?.size) {
+    objectCardPreview.update(payload);
+    objectCardHasValidPreview = true;
+  } else if (!objectCardHasValidPreview) {
+    objectCardPreview.update(payload);
+  }
+}
+
+function clearObjectPreviewBuffer() {
+  objectCardHasValidPreview = false;
+  bufferPreviewStore.clear(BUFFER_PREVIEW_IDS.OBJECT);
+}
+for (const button of document.querySelectorAll('[data-object-display]')) {
+  button.addEventListener('click', () => {
+    if (button.disabled || button.dataset.objectDisplay !== 'confidence') return;
+    objectDisplayMode = 'confidence';
+    for (const option of document.querySelectorAll('[data-object-display]')) {
+      option.setAttribute(
+        'aria-pressed',
+        String(option.dataset.objectDisplay === objectDisplayMode),
+      );
+    }
+    ui.objectPreviewHud.dataset.displayMode = objectDisplayMode;
+    ui.objectWorkspaceCard.dataset.displayMode = objectDisplayMode;
+  });
+}
+ui.objectPreviewHud.dataset.displayMode = objectDisplayMode;
+ui.objectWorkspaceCard.dataset.displayMode = objectDisplayMode;
+ui.objectWorkspaceControlHost.append(ui.objectPreviewHud.querySelector('#objectPreviewControls'));
+ui.maskWorkspaceControlHost.append(ui.projectionMaskTools);
+ui.workspaceMainHost.append(ui.projectionPip, ui.objectPreviewHud);
+ui.objectPreviewHud.hidden = false;
 const segmentDock = new SegmentDock(camera, renderer.domElement, {
   onInspect: inspectDockSegment,
 });
@@ -682,9 +1242,33 @@ function setProgress(f) {
   if (f != null) ui.bar.firstElementChild.style.width = `${Math.min(1, Math.max(0, f)) * 100}%`;
 }
 
+function syncTargetOrbitControls(active = state.active) {
+  if (!active?.currentMask || !state.splat || !state.selection.size) {
+    if (!active) controls.enablePan = true;
+    return false;
+  }
+  if (!active.sceneOrbitPivotSet || !active.sceneOrbitCentre) {
+    const analysis = analyzeSelectedObject({
+      centers: state.splat.centers,
+      selection: state.selection,
+      camera,
+    });
+    active.sceneOrbitCentre = analysis.centre.clone();
+    active.sceneOrbitPivotSet = true;
+    active.targetControlsActivated = false;
+  }
+  // OrbitControls owns this target after the first real drag/wheel event.
+  // Assigning the pivot without update() preserves the immutable capture pose
+  // until the user deliberately departs it.
+  controls.target.copy(active.sceneOrbitCentre);
+  controls.enablePan = false;
+  return true;
+}
+
 function renderSelectionState({ recentlyAdded = state.recentlyAdded } = {}) {
   if (!state.splat || !state.highlight) {
-    ui.objectPreviewHud.hidden = true;
+    ui.objectPreviewHud.hidden = false;
+    syncWorkspaceStack();
     return;
   }
   const appearance = {
@@ -697,7 +1281,9 @@ function renderSelectionState({ recentlyAdded = state.recentlyAdded } = {}) {
     boundarySoftness: state.boundarySoftness,
   };
   state.highlight.set(state.selection, appearance);
-  objectPreview.update({
+  syncTargetOrbitControls();
+  syncExploreSelectionContext();
+  updateObjectPreviewSurfaces({
     centers: state.splat.centers,
     colors: state.splat.colors,
     sourceOpacity: state.splat.opacity,
@@ -708,7 +1294,9 @@ function renderSelectionState({ recentlyAdded = state.recentlyAdded } = {}) {
     ...appearance,
   });
   ui.objectPreviewHud.dataset.updating = 'false';
-  ui.objectPreviewHud.hidden = state.selection.size === 0;
+  ui.objectWorkspaceCard.dataset.updating = 'false';
+  ui.objectPreviewHud.hidden = false;
+  syncTargetingOverlayVisibility();
   if (state.selection.size === 0 && state.gaussianCleanup) {
     state.gaussianCleanup = false;
     objectPreview.setEditMode('view');
@@ -746,15 +1334,21 @@ function renderSelectionState({ recentlyAdded = state.recentlyAdded } = {}) {
   }
   updateFocusRefineHud();
   refreshMultiviewCapability();
-  // Selection geometry changed; do not wait for the resting cockpit cadence.
-  lastCockpitRenderedAt = 0;
+  syncWorkspaceStack();
+  // Selection geometry changed; repaint the complete visible framebuffer on
+  // the next animation tick.
+  lastRenderedFrameAt = 0;
 }
 
 function markObjectPreviewUpdating(label = 'Updating preview…') {
   if (!state.selection.size || ui.objectPreviewHud.hidden) return;
   objectPreview.setUpdating(true);
+  objectCardPreview.setUpdating(true);
   ui.objectPreviewHud.dataset.updating = 'true';
-  ui.objectPreviewStatus.textContent = label;
+  ui.objectWorkspaceCard.dataset.updating = 'true';
+  ui.objectPreviewStatus.textContent = 'LOADING';
+  ui.objectWorkspaceCardStatus.textContent = 'LOADING';
+  ui.objectPreviewStatus.title = label;
 }
 
 function focusCameraFromPreviewSurface({
@@ -1232,7 +1826,7 @@ function inspectDockSegment(segmentId) {
   segmentDock.setActive(segmentId);
   state.highlight.clearGhost();
   state.highlight.setGhost(segment.selection);
-  objectPreview.update({
+  updateObjectPreviewSurfaces({
     centers: state.splat.centers,
     colors: state.splat.colors,
     sourceOpacity: state.splat.opacity,
@@ -1858,6 +2452,15 @@ function clearHoveredObjectSuggestion() {
   ui.detectorSuggestionLabel.style.display = 'none';
 }
 
+function syncTargetingOverlayVisibility() {
+  const suppressed = workspaceController.active === 'object'
+    || workspaceController.active === 'mask'
+    || Boolean(pendingTargetReplacement);
+  ui.objectHintHud.hidden = suppressed;
+  if (suppressed) clearHoveredObjectSuggestion();
+  if (!suppressed) detectionHud.draw();
+}
+
 function clearObjectSuggestions() {
   clearTimeout(objectSuggestionTimer);
   clearTimeout(classicSuggestionTimer);
@@ -1969,6 +2572,9 @@ async function runObjectSuggestions(revision) {
     objectSuggestionRevision = revision;
     objectSuggestions = proposals;
     detectionHud.setDetections(proposals, capture.width, capture.height);
+    renderProjectionPreview({
+      label: `${capture.width} × ${capture.height} · ${proposals.length} target hints`,
+    });
     ui.suggestionsToggle.textContent =
       `Target scanner · ${proposals.length} found`;
     const knownLabels = objectDetector.labels?.length ?? 0;
@@ -2027,6 +2633,9 @@ async function runRefinedObjectSuggestions(
     ]).sort((a, b) => b.score - a.score).slice(0, 56);
     objectSuggestionRevision = revision;
     detectionHud.setDetections(objectSuggestions, capture.width, capture.height);
+    renderProjectionPreview({
+      label: `${capture.width} × ${capture.height} · ${objectSuggestions.length} target hints`,
+    });
     ui.suggestionsToggle.textContent =
       `Target scanner · ${objectSuggestions.length} found`;
     ui.suggestionsToggle.title =
@@ -2047,6 +2656,12 @@ function isYoloSuggestion(suggestion) {
 }
 
 function showHoveredObjectSuggestion(next, rect) {
+  if (workspaceController.active === 'object'
+    || workspaceController.active === 'mask'
+    || pendingTargetReplacement?.status === 'previewing'
+    || pendingTargetReplacement?.status === 'decision') {
+    next = null;
+  }
   if (hoveredObjectSuggestion?.id === next?.id) return;
   hoveredObjectSuggestion = next;
   hudEffects.setSuggestion(next, capture.width, capture.height);
@@ -2069,36 +2684,61 @@ function showHoveredObjectSuggestion(next, rect) {
 }
 
 function updateObjectSuggestionHover(event) {
-  if (!state.objectSuggestionsEnabled || !state.encoded || state.active
-    || classicRegionProposer.revision !== viewRevision) {
+  const lockedTarget = Boolean(state.active?.currentMask);
+  if (workspaceController.active === 'object'
+    || workspaceController.active === 'mask'
+    || !state.objectSuggestionsEnabled || !state.encoded
+    || pendingTargetReplacement) {
+    clearTimeout(classicSuggestionTimer);
+    clearHoveredObjectSuggestion();
+    return;
+  }
+  if (lockedTarget && !currentSelectionAlignment(state.active).ok) {
+    clearTimeout(classicSuggestionTimer);
+    clearHoveredObjectSuggestion();
+    return;
+  }
+  if (!lockedTarget && classicRegionProposer.revision !== viewRevision) {
     clearTimeout(classicSuggestionTimer);
     clearHoveredObjectSuggestion();
     return;
   }
   camera.updateMatrixWorld(true);
-  if (!state.frozen?.frame
+  const authoritativeFrame = lockedTarget ? state.active.frame : state.frozen?.frame;
+  if (!authoritativeFrame
     || !viewMatricesMatch(
-      state.frozen.frame.camera.viewMatrix,
+      authoritativeFrame.camera.viewMatrix,
       camera.matrixWorldInverse.elements,
     )) {
     clearHoveredObjectSuggestion();
-    markViewDirty({
-      force: true,
-      detail: 'The camera changed · refreshing object hints for this view.',
-    });
+    if (!lockedTarget) {
+      markViewDirty({
+        force: true,
+        detail: 'The camera changed · refreshing object hints for this view.',
+      });
+    }
     return;
   }
   const rect = renderer.domElement.getBoundingClientRect();
   const x = (event.clientX - rect.left) / rect.width * capture.width;
   const y = (event.clientY - rect.top) / rect.height * capture.height;
-  const matches = objectSuggestionRevision === viewRevision
-    ? objectSuggestions.filter(({ box }) =>
-      x >= box.x1 && x <= box.x2 && y >= box.y1 && y <= box.y2)
+  const suggestionRevision = authoritativeFrame.viewRevision;
+  const matches = objectSuggestionRevision === suggestionRevision
+    ? objectSuggestions.filter((suggestion) => {
+      const { box } = suggestion;
+      return (!lockedTarget || isYoloSuggestion(suggestion))
+        && x >= box.x1 && x <= box.x2 && y >= box.y1 && y <= box.y2;
+    })
     : [];
   matches.sort((a, b) => a.area - b.area || b.score - a.score);
   if (matches[0]) {
     clearTimeout(classicSuggestionTimer);
     showHoveredObjectSuggestion(matches[0], rect);
+    return;
+  }
+  if (lockedTarget) {
+    clearTimeout(classicSuggestionTimer);
+    clearHoveredObjectSuggestion();
     return;
   }
   if (hoveredObjectSuggestion?.source === 'classic-fill') {
@@ -2239,17 +2879,25 @@ sam.load((p) => {
 // --------------------------------------------------------- view capture ----
 
 const capture = document.createElement('canvas');
-const captureCtx = capture.getContext('2d', { willReadFrequently: true });
+const captureCtx = capture.getContext('2d', {
+  willReadFrequently: true,
+  colorSpace: SELECTION_FRAME_CANVAS_COLOR_SPACE,
+});
 const currentViewReadback = {
   target: null,
   pixels: null,
   image: null,
   width: 0,
   height: 0,
+  plan: null,
 };
-const projectionCtx = ui.projectionCanvas.getContext('2d');
+const projectionCtx = ui.projectionCanvas.getContext('2d', {
+  colorSpace: SELECTION_FRAME_CANVAS_COLOR_SPACE,
+});
 const maskCanvas = document.createElement('canvas');
-const maskCtx = maskCanvas.getContext('2d');
+const maskCtx = maskCanvas.getContext('2d', {
+  colorSpace: SELECTION_FRAME_CANVAS_COLOR_SPACE,
+});
 const multiviewCapture = document.createElement('canvas');
 const multiviewCaptureCtx = multiviewCapture.getContext('2d', { willReadFrequently: true });
 const multiviewSeedCanvas = document.createElement('canvas');
@@ -2257,24 +2905,82 @@ const multiviewSeedCtx = multiviewSeedCanvas.getContext('2d');
 const multiviewMaskCanvas = document.createElement('canvas');
 const multiviewMaskCtx = multiviewMaskCanvas.getContext('2d');
 const refinementCamera = new THREE.PerspectiveCamera(60, 1, 0.05, 500);
-const refinementReadback = {
-  target: null,
-  pixels: null,
-  image: null,
-  width: 0,
-  height: 0,
-};
 const scanDiagnostics = {
   current: null,
   last: null,
+  visibleRenderer: visibleRendererDiagnostics,
+  selectionCapture: null,
 };
 window.__gaussianEditDiagnostics = scanDiagnostics;
 let projectionDisplayCrop = null;
 let projectionCropRevision = -1;
 
 function setProjectionStatus(text, stale = false) {
-  ui.projectionStatus.textContent = text;
+  const status = state.active?.currentMask
+    ? 'MASK READY'
+    : state.encoded && !stale ? 'LIVE' : 'LOADING';
+  ui.projectionStatus.textContent = status;
+  ui.maskWorkspaceCardStatus.textContent = status;
+  ui.projectionStatus.title = text;
+  ui.maskWorkspaceCardStatus.title = text;
   ui.projectionPip.dataset.stale = String(stale);
+}
+
+function renderProjectionSuggestions(context, crop, out) {
+  const frame = state.active?.frame ?? state.frozen?.frame;
+  if (!frame || !projectionOverlayIsCurrent({
+    suggestionRevision: objectSuggestionRevision,
+    frameRevision: frame.viewRevision,
+    sameFrame: frame === state.frozen?.frame,
+  })) return;
+  const selected = state.active?.detectorSuggestion ?? null;
+  const suggestions = objectSuggestions
+    .filter((suggestion) => suggestion?.box)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 12);
+  if (selected?.box && !suggestions.some((suggestion) => suggestion.id === selected.id)) {
+    suggestions.push(selected);
+  }
+  context.save();
+  context.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
+  context.textBaseline = 'bottom';
+  for (const suggestion of suggestions) {
+    const isSelected = selected && (
+      suggestion === selected
+      || (suggestion.id != null && suggestion.id === selected.id)
+    );
+    const mapped = captureBoxToProjection(
+      suggestion.box,
+      crop,
+      out.width,
+      out.height,
+    );
+    if (!mapped) continue;
+    const {
+      x1, y1, x2, y2,
+    } = mapped;
+    if (x2 <= 0 || y2 <= 0 || x1 >= out.width || y1 >= out.height) continue;
+    const left = Math.max(0, x1);
+    const top = Math.max(0, y1);
+    const right = Math.min(out.width, x2);
+    const bottom = Math.min(out.height, y2);
+    context.strokeStyle = isSelected ? 'rgba(255, 122, 62, 0.96)' : 'rgba(112, 215, 255, 0.34)';
+    context.lineWidth = isSelected ? 2 : 1;
+    context.strokeRect(
+      left + 0.5,
+      top + 0.5,
+      Math.max(0, right - left - 1),
+      Math.max(0, bottom - top - 1),
+    );
+    const label = suggestion.label && suggestion.label !== 'visual region'
+      ? suggestion.label.toUpperCase()
+      : '';
+    if (label) {
+      context.fillStyle = isSelected ? 'rgba(255, 155, 92, 0.98)' : 'rgba(164, 226, 238, 0.64)';
+      context.fillText(label, left + 3, Math.max(11, top - 2));
+    }
+  }
+  context.restore();
 }
 
 /**
@@ -2329,10 +3035,17 @@ function renderProjectionPreview({
       const added = Boolean(mask[i] && hasBaseline && !baselineMask[i]);
       const removed = Boolean(!mask[i] && hasBaseline && baselineMask[i]);
       if (!mask[i] && !removed) continue;
+      const x = i % maskW;
+      const y = Math.floor(i / maskW);
+      const boundary = Boolean(mask[i] && (
+        x === 0 || y === 0 || x === maskW - 1 || y === maskH - 1
+        || !mask[i - 1] || !mask[i + 1]
+        || !mask[i - maskW] || !mask[i + maskW]
+      ));
       pixels.data[p] = removed ? 142 : added ? 112 : 255;
       pixels.data[p + 1] = removed ? 151 : added ? 215 : 92;
       pixels.data[p + 2] = removed ? 154 : added ? 255 : 43;
-      pixels.data[p + 3] = added || removed ? 138 : 104;
+      pixels.data[p + 3] = added || removed ? 138 : boundary ? 196 : 58;
     }
     maskCtx.putImageData(pixels, 0, 0);
     const maskScaleX = maskW / capture.width;
@@ -2350,7 +3063,15 @@ function renderProjectionPreview({
     );
   }
 
-  if (state.showProjectionSeeds && proj && seeds?.length && state.frozen) {
+  const showTargetingOverlays = workspaceController.active !== 'mask'
+    && projectionTargetingOverlaysVisible(state.editMode);
+  out.dataset.targetingOverlays = showTargetingOverlays ? 'visible' : 'hidden';
+  if (showTargetingOverlays) {
+    renderProjectionSuggestions(projectionCtx, crop, out);
+  }
+
+  if (showTargetingOverlays
+    && state.showProjectionSeeds && proj && seeds?.length && state.frozen) {
     const frame = state.frozen.frame;
     const displayScaleX = out.width / crop.w;
     const displayScaleY = out.height / crop.h;
@@ -2370,7 +3091,9 @@ function renderProjectionPreview({
     }
   }
 
-  const markers = (points ?? (point ? [{ ...point, label: 1 }] : []))
+  const markers = (showTargetingOverlays
+    ? (points ?? (point ? [{ ...point, label: 1 }] : []))
+    : [])
     .map((marker) => ({
       ...marker,
       x: (marker.x - crop.x) * out.width / crop.w,
@@ -2420,6 +3143,50 @@ function renderProjectionPreview({
   ui.projectionEditorBack.hidden = !state.projectionEditorOpen;
   setProjectionStatus(label, stale);
   renderProjectionPolygon();
+  updateMaskWorkspaceCard();
+}
+
+const MASK_WORKSPACE_CARD_LONG_EDGE = 512;
+const maskWorkspaceCardContext = ui.maskWorkspaceCardCanvas.getContext('2d', {
+  colorSpace: SELECTION_FRAME_CANVAS_COLOR_SPACE,
+});
+
+function updateMaskWorkspaceCard() {
+  const source = ui.projectionCanvas;
+  if (!source.width || !source.height) return;
+  const scale = Math.min(1, MASK_WORKSPACE_CARD_LONG_EDGE
+    / Math.max(source.width, source.height));
+  const width = Math.max(1, Math.round(source.width * scale));
+  const height = Math.max(1, Math.round(source.height * scale));
+  if (ui.maskWorkspaceCardCanvas.width !== width
+    || ui.maskWorkspaceCardCanvas.height !== height) {
+    ui.maskWorkspaceCardCanvas.width = width;
+    ui.maskWorkspaceCardCanvas.height = height;
+  }
+  maskWorkspaceCardContext.clearRect(0, 0, width, height);
+  maskWorkspaceCardContext.drawImage(source, 0, 0, width, height);
+  const revision = currentBufferPreviewRevision();
+  if (revision) {
+    bufferPreviewStore.publish({
+      bufferId: BUFFER_PREVIEW_IDS.MASK,
+      revision,
+      status: state.active?.currentMask ? 'MASK READY' : 'LIVE',
+      counts: {
+        selected: state.selection.size,
+        maskPixels: state.active?.currentMask?.length ?? 0,
+      },
+      displayMode: state.editMode === 'off' ? 'inspect' : 'edit',
+      render: {
+        source: {
+          kind: 'selection-frame-mask',
+          width,
+          height,
+        },
+        payload: ui.maskWorkspaceCardCanvas,
+        bytes: width * height * 4,
+      },
+    });
+  }
 }
 
 function projectionEventPoint(event) {
@@ -2430,42 +3197,15 @@ function projectionEventPoint(event) {
   if (!active?.currentMask || active.frame !== state.frozen?.frame
     || !crop || !rect.width || !rect.height) return null;
 
-  const imageAspect = out.width / Math.max(1, out.height);
-  const boxAspect = rect.width / Math.max(1, rect.height);
-  let width = rect.width;
-  let height = rect.height;
-  let left = rect.left;
-  let top = rect.top;
-  if (imageAspect > boxAspect) {
-    height = rect.width / imageAspect;
-    top += (rect.height - height) * 0.5;
-  } else {
-    width = rect.height * imageAspect;
-    left += (rect.width - width) * 0.5;
-  }
-  if (event.clientX < left || event.clientX > left + width
-    || event.clientY < top || event.clientY > top + height) return null;
-
-  const u = (event.clientX - left) / width;
-  const v = (event.clientY - top) / height;
-  const captureX = crop.x + u * crop.w;
-  const captureY = crop.y + v * crop.h;
-  const maskPoint = capturePointToMask(
-    active.frame,
-    captureX,
-    captureY,
-    active.maskW,
-    active.maskH,
-  );
-  if (!maskPoint) return null;
-  return {
-    captureX,
-    captureY,
-    maskX: maskPoint.x,
-    maskY: maskPoint.y,
-    contentWidth: width,
-    contentHeight: height,
-  };
+  return projectionClientPointToMask({
+    clientX: event.clientX,
+    clientY: event.clientY,
+    rect,
+    output: { width: out.width, height: out.height },
+    crop,
+    capture: active.frame.capture,
+    mask: { width: active.maskW, height: active.maskH },
+  });
 }
 
 function renderProjectionPolygon() {
@@ -2622,6 +3362,7 @@ function resetProjectionPreview(label = 'waiting for scene') {
   ui.projectionPip.dataset.editorOpen = 'false';
   ui.projectionCanvas.dataset.editing = 'false';
   setProjectionStatus(label, true);
+  updateMaskWorkspaceCard();
 }
 
 function renderSelectionOutline(mask, w, h, baselineMask = null) {
@@ -2629,6 +3370,15 @@ function renderSelectionOutline(mask, w, h, baselineMask = null) {
   if (canvas.width !== w || canvas.height !== h) {
     canvas.width = w;
     canvas.height = h;
+  }
+  // The raster belongs to one immutable camera/capture contract. Check the
+  // contract in the paint function itself so a stale outline cannot flash for
+  // one RAF before the outer containment loop notices a moved camera.
+  if (!currentSelectionAlignment().ok) {
+    canvas.hidden = true;
+    const staleContext = canvas.getContext('2d');
+    staleContext.clearRect(0, 0, canvas.width, canvas.height);
+    return false;
   }
   const ctx = canvas.getContext('2d');
   const image = ctx.createImageData(w, h);
@@ -2651,6 +3401,7 @@ function renderSelectionOutline(mask, w, h, baselineMask = null) {
 
   ctx.putImageData(image, 0, 0);
   canvas.hidden = false;
+  return true;
 }
 
 function clearSelectionOutline() {
@@ -2660,8 +3411,13 @@ function clearSelectionOutline() {
 }
 
 function dismissActiveSelection({ hideInspector = true, preserveActive = false } = {}) {
+  cancelTargetReplacement({ restore: false });
   clearTimeout(activeSelectionTimer);
-  if (!preserveActive) state.active = null;
+  if (!preserveActive) {
+    state.active = null;
+    controls.enablePan = true;
+  }
+  ui.visibleObjectGate.hidden = true;
   state.editMode = 'off';
   state.projectionEditorOpen = false;
   state.polygonPoints = [];
@@ -2677,6 +3433,11 @@ function dismissActiveSelection({ hideInspector = true, preserveActive = false }
     ui.selectionProps.hidden = true;
     document.body.dataset.inspector = 'false';
   }
+  if (!preserveActive) {
+    setMethodUI(state.configuredSources);
+    syncSelectionInspector();
+  }
+  syncTargetingOverlayVisibility();
 }
 
 /**
@@ -2691,9 +3452,13 @@ function dismissActiveSelection({ hideInspector = true, preserveActive = false }
 function captureSceneFrame(targetCanvas, targetContext, targetCamera = camera) {
   const src = renderer.domElement;
   if (!src.width || !src.height) throw new Error('render target has no size');
-  const scale = Math.min(1, SAM_INPUT_MAX / Math.max(src.width, src.height));
-  const width = Math.max(1, Math.round(src.width * scale));
-  const height = Math.max(1, Math.round(src.height * scale));
+  const capturePlan = planSelectionEditorCapture({
+    width: src.width,
+    height: src.height,
+  });
+  const { width, height } = capturePlan;
+  currentViewReadback.plan = capturePlan;
+  scanDiagnostics.selectionCapture = capturePlan;
   if (!currentViewReadback.target
     || currentViewReadback.width !== width
     || currentViewReadback.height !== height) {
@@ -2706,7 +3471,7 @@ function captureSceneFrame(targetCanvas, targetContext, targetCamera = camera) {
       format: THREE.RGBAFormat,
       type: THREE.UnsignedByteType,
     });
-    currentViewReadback.target.texture.colorSpace = renderer.outputColorSpace;
+    currentViewReadback.target.texture.colorSpace = visibleOutputState.outputColorSpace;
     currentViewReadback.pixels = new Uint8Array(width * height * 4);
     currentViewReadback.image = targetContext.createImageData(width, height);
     currentViewReadback.width = width;
@@ -2734,7 +3499,10 @@ function captureSceneFrame(targetCanvas, targetContext, targetCamera = camera) {
     currentViewReadback.target.viewport.set(0, 0, width, height);
     currentViewReadback.target.scissor.set(0, 0, width, height);
     currentViewReadback.target.scissorTest = false;
-    currentViewReadback.target.texture.colorSpace = renderer.outputColorSpace;
+    renderer.outputColorSpace = visibleOutputState.outputColorSpace;
+    renderer.toneMapping = visibleOutputState.toneMapping;
+    renderer.toneMappingExposure = visibleOutputState.toneMappingExposure;
+    currentViewReadback.target.texture.colorSpace = visibleOutputState.outputColorSpace;
     renderer.setRenderTarget(currentViewReadback.target);
     renderer.setClearColor(0x000000, 1);
     renderer.autoClear = false;
@@ -2775,7 +3543,7 @@ function captureSceneFrame(targetCanvas, targetContext, targetCamera = camera) {
     // Even though the pass is isolated, force the next animation tick to
     // repaint the cockpit. This makes recovery immediate if a driver exposes a
     // transient default-framebuffer loss while switching render targets.
-    lastCockpitRenderedAt = 0;
+    lastRenderedFrameAt = 0;
   }
 }
 
@@ -2815,6 +3583,22 @@ function markViewDirty({
   if (force) {
     lastDirtyCameraPosition.copy(camera.position);
     lastDirtyCameraQuaternion.copy(camera.quaternion);
+  }
+
+  // A current object owns an immutable Selection frame. Scene/Viewfinder may
+  // move the visible cockpit, but it must not silently replace that draft or
+  // its model input. The explicit workspace/replacement flow decides when a
+  // new Selection frame is captured.
+  if (state.active) {
+    lastViewChangeAt = performance.now();
+    state.pendingSelection = null;
+    // Scene inspection and unlocked exploration move only the live camera.
+    // The object's authoritative SelectionFrame, RGB crop, mask, prompts, and
+    // lift projection remain pinned until the user explicitly replaces it.
+    clearHoveredObjectSuggestion();
+    enforceSelectionAlignmentContainment();
+    lastRenderedFrameAt = 0;
+    return;
   }
 
   viewRevision++;
@@ -2981,9 +3765,9 @@ async function runEncode() {
         height: displayCrop.h,
       },
       colorTransform: {
-        outputColorSpace: String(renderer.outputColorSpace),
-        toneMapping: String(renderer.toneMapping),
-        toneMappingExposure: renderer.toneMappingExposure,
+        outputColorSpace: String(visibleOutputState.outputColorSpace),
+        toneMapping: String(visibleOutputState.toneMapping),
+        toneMappingExposure: visibleOutputState.toneMappingExposure,
         alpha: 'opaque',
       },
       orientation: 'top-left',
@@ -2997,6 +3781,7 @@ async function runEncode() {
       projection,
       revision,
       sceneRevision: contentRevision,
+      captureDiagnostics: currentViewReadback.plan,
     });
     projectionDisplayCrop = {
       x: frame.crop.x,
@@ -3135,9 +3920,14 @@ function nextFrame() {
 // OrbitControls fires 'start' on pointerdown even when the camera never moves,
 // so invalidating there threw away the encoding before the picker could use it
 // and every selection click was dead. 'change' only fires on real movement.
-controls.addEventListener('change', () => markViewDirty({
-  detail: 'Camera changed · selection is paused until encoding catches up.',
-}));
+controls.addEventListener('change', () => {
+  if (state.active?.sceneOrbitPivotSet) {
+    state.active.targetControlsActivated = true;
+  }
+  markViewDirty({
+    detail: 'Camera changed · selection is paused until encoding catches up.',
+  });
+});
 controls.addEventListener('end', () => {
   if (!state.encoded && !state.exploration) scheduleEncode();
 });
@@ -3155,20 +3945,110 @@ const MOVE_CODES = new Set([
   'Space', 'ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight',
 ]);
 
+function topEscapeLayer() {
+  const openPopovers = [...document.querySelectorAll('[popover]')].filter((element) => {
+    try {
+      return element.matches(':popover-open');
+    } catch {
+      return false;
+    }
+  });
+  const popover = openPopovers.at(-1);
+  if (popover) return () => popover.hidePopover();
+
+  const dialog = [...document.querySelectorAll('dialog[open]')].at(-1);
+  if (dialog) return () => dialog.close();
+  if (pendingTargetReplacement || !ui.newTargetGate.hidden) return cancelTargetReplacement;
+
+  if (ui.openSelectionSetup.getAttribute('aria-expanded') === 'true'
+    && !ui.preselectionOptions.hidden
+    && ui.preselectionOptions.getClientRects().length) {
+    return () => {
+      ui.preselectionOptions.hidden = true;
+      ui.openSelectionSetup.setAttribute('aria-expanded', 'false');
+      ui.openSelectionSetup.textContent = 'Show settings';
+    };
+  }
+
+  const focusedDetails = document.activeElement?.closest?.('#selectionProps details[open]');
+  const details = focusedDetails
+    ?? [...document.querySelectorAll('#selectionProps details[open]')]
+      .filter((element) => element.getClientRects().length)
+      .at(-1);
+  if (details) return () => {
+    details.open = false;
+  };
+  return null;
+}
+
+function hasTransientWorkspaceState() {
+  return objectPreview.interacting
+    || borderDrawing
+    || state.polygonPoints.length > 0
+    || state.gaussianCleanup
+    || state.editMode !== 'off';
+}
+
+function cancelTransientWorkspaceState() {
+  if (objectPreview.cancelInteraction()) return true;
+  if (borderDrawing) {
+    cancelBorderStroke();
+    return true;
+  }
+  if (state.polygonPoints.length) {
+    cancelPolygonEdit();
+    renderEditableProjection();
+    return true;
+  }
+  if (state.gaussianCleanup) {
+    setGaussianCleanup(false);
+    return true;
+  }
+  if (state.editMode !== 'off') {
+    setBorderEditMode('off');
+    return true;
+  }
+  return false;
+}
+
+function handleWorkspaceEscape(event) {
+  if (event.code !== 'Escape' || event.repeat) return;
+  const closeLayer = topEscapeLayer();
+  const action = resolveEscapeAction({
+    hasBlockingLayer: Boolean(closeLayer),
+    hasTransient: hasTransientWorkspaceState(),
+    workspace: workspaceController.active,
+    sceneExploring: state.exploration || Boolean(document.pointerLockElement),
+  });
+  if (action === ESCAPE_ACTIONS.NONE) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  if (action === ESCAPE_ACTIONS.CLOSE_LAYER) closeLayer();
+  else if (action === ESCAPE_ACTIONS.CANCEL_TRANSIENT) cancelTransientWorkspaceState();
+  else if (action === ESCAPE_ACTIONS.RETURN_WORKSPACE) {
+    setWorkspace(null, { returnPrevious: true });
+  } else if (action === ESCAPE_ACTIONS.FREEZE_SCENE) {
+    if (document.pointerLockElement) document.exitPointerLock();
+    setExplorationMode(false);
+  }
+}
+
+addEventListener('keydown', handleWorkspaceEscape, true);
+
 addEventListener('keydown', (event) => {
   if (event.code !== 'Tab' || event.repeat || !state.splat) return;
   event.preventDefault();
   event.stopPropagation();
   document.activeElement?.blur?.();
-  const enterViewfinder = !state.exploration;
-  setExplorationMode(enterViewfinder);
-  if (enterViewfinder) viewfinder.requestLock();
+  const next = workspaceController.next(workspaceContext(), event.shiftKey);
+  setWorkspace(next, { requestPointerLock: next === 'scene' });
 }, true);
 
 addEventListener('keydown', (e) => {
   if (e.metaKey || e.repeat) return;
   if (e.target?.closest?.('input, textarea, [contenteditable="true"]')) return;
   if (!MOVE_CODES.has(e.code)) return;
+  if (currentInputOwner() !== 'scene-flight') return;
   // A clicked mode/navigation button retains DOM focus by default, which makes
   // Space activate it again instead of flying. Movement keys always transfer
   // control back to the viewport.
@@ -3184,9 +4064,11 @@ const moveFwd = new THREE.Vector3();
 const moveRight = new THREE.Vector3();
 const headingOffset = new THREE.Vector3();
 const headingRotation = new THREE.Quaternion();
+const sceneClickProjection = new THREE.Vector3();
+let pendingTargetReplacement = null;
 
 function updateMovement(dt) {
-  if (!keys.size || !state.splat || state.multiview.session) return;
+  if (currentInputOwner() !== 'scene-flight' || !keys.size || !state.splat) return;
 
   camera.getWorldDirection(moveFwd);
   moveRight.crossVectors(moveFwd, camera.up).normalize();
@@ -3224,8 +4106,295 @@ function updateMovement(dt) {
 
 // -------------------------------------------------------------- picking ----
 
+function clickHitsCurrentSelection(clientX, clientY, radiusPixels = 15) {
+  if (!state.splat || !state.selection.size) return false;
+  const rect = renderer.domElement.getBoundingClientRect();
+  if (!rect.width || !rect.height) return false;
+  const radiusSquared = radiusPixels * radiusPixels;
+  const stride = Math.max(1, Math.ceil(state.selection.size / 50_000));
+  let ordinal = 0;
+  for (const index of state.selection) {
+    if (ordinal++ % stride !== 0) continue;
+    sceneClickProjection.set(
+      state.splat.centers[index * 3],
+      state.splat.centers[index * 3 + 1],
+      state.splat.centers[index * 3 + 2],
+    ).project(camera);
+    if (sceneClickProjection.z < -1 || sceneClickProjection.z > 1) continue;
+    const x = rect.left + (sceneClickProjection.x * 0.5 + 0.5) * rect.width;
+    const y = rect.top + (-sceneClickProjection.y * 0.5 + 0.5) * rect.height;
+    if ((x - clientX) ** 2 + (y - clientY) ** 2 <= radiusSquared) return true;
+  }
+  return false;
+}
+
+function refocusCurrentSceneTarget() {
+  if (!state.splat || !state.selection.size) return;
+  positionVisibleObjectConfirmation();
+  setWork({
+    key: `scene-target-refocus-${performance.now()}`,
+    state: 'ready',
+    title: 'Current target refocused',
+    detail: 'The object draft and its captured camera remain unchanged.',
+  });
+}
+
+function cancelTargetReplacement({ restore = true } = {}) {
+  const transaction = pendingTargetReplacement;
+  pendingTargetReplacement = null;
+  ui.newTargetGate.hidden = true;
+  document.body.dataset.retarget = 'locked';
+  if (!restore || !transaction?.original) return;
+  if (transaction.candidateActive) transaction.candidateActive.requestToken++;
+  restoreSparseSelectionState(transaction.original);
+  state.recentlyAdded = new Set(transaction.originalRecentlyAdded ?? []);
+  state.gaussianCleanupUndo = transaction.originalGaussianCleanupUndo ?? null;
+  renderSelectionState();
+  if (state.active?.currentMask) {
+    setMethodUI(state.active.sources);
+    setFusionUI(state.active.fusion);
+    setExtentUI(state.active.extent);
+    renderEditableProjection();
+    renderSelectionOutline(
+      state.active.currentMask,
+      state.active.maskW,
+      state.active.maskH,
+      state.active.controlDiff?.baseMask,
+    );
+  }
+  syncVisibleObjectConfirmation();
+  setWork({
+    key: `retarget-canceled-${performance.now()}`,
+    state: 'ready',
+    title: 'Current target restored',
+    detail: 'The candidate preview was discarded; the original draft is unchanged.',
+  });
+}
+
+function retargetSuggestionClientRect(suggestion) {
+  if (!suggestion?.box || !capture.width || !capture.height) return null;
+  const viewport = renderer.domElement.getBoundingClientRect();
+  return {
+    left: viewport.left + suggestion.box.x1 / capture.width * viewport.width,
+    top: viewport.top + suggestion.box.y1 / capture.height * viewport.height,
+    right: viewport.left + suggestion.box.x2 / capture.width * viewport.width,
+    bottom: viewport.top + suggestion.box.y2 / capture.height * viewport.height,
+  };
+}
+
+function positionTargetReplacementDecision() {
+  const transaction = pendingTargetReplacement;
+  if (!transaction || transaction.status !== 'decision' || ui.newTargetGate.hidden) return;
+  const candidate = retargetSuggestionClientRect(transaction.suggestion);
+  if (!candidate) return;
+  const layout = positionRetargetHud({
+    candidate,
+    hudWidth: ui.newTargetGate.offsetWidth || 220,
+    hudHeight: ui.newTargetGate.offsetHeight || 34,
+    viewportWidth: innerWidth,
+    viewportHeight: innerHeight,
+  });
+  ui.newTargetGate.style.left = `${layout.left}px`;
+  ui.newTargetGate.style.top = `${layout.top}px`;
+  ui.newTargetGate.dataset.edgeDocked = String(layout.overlapsCandidate);
+}
+
+async function proposeTargetReplacement(event) {
+  const originalActive = state.active;
+  const originalRevision = currentVisibleObjectRevision(originalActive);
+  const alignment = currentSelectionAlignment(originalActive);
+  const suggestion = hoveredObjectSuggestion;
+  const rect = renderer.domElement.getBoundingClientRect();
+  const validSuggestion = isYoloSuggestion(suggestion)
+    && objectSuggestionRevision === originalActive?.frame?.viewRevision;
+  if (!originalActive || !originalRevision || !alignment.ok
+    || !validSuggestion || !rect.width || !rect.height) {
+    if (!alignment.ok) exposeSelectionAlignmentFailure(
+      originalActive,
+      'Return to the captured view before previewing another target.',
+    );
+    else {
+      setWork({
+        key: 'retarget-needs-current-hint',
+        state: 'ready',
+        title: 'Hover another target first',
+        detail: 'Choose a cyan object hint from this captured camera.',
+      });
+    }
+    return;
+  }
+  const capturePoint = clientPointToCapture(
+    originalActive.frame,
+    event.clientX,
+    event.clientY,
+    rect,
+  );
+  if (!capturePoint) return;
+
+  const transaction = {
+    status: 'previewing',
+    original: captureSparseSelectionState({
+      manualExcluded: true,
+      active: true,
+    }),
+    originalRevisionKey: originalRevision.key,
+    originalRecentlyAdded: new Set(state.recentlyAdded),
+    originalGaussianCleanupUndo: state.gaussianCleanupUndo,
+    suggestion,
+    frame: originalActive.frame,
+    sceneRevision: sceneContentRevision,
+    candidateActive: null,
+  };
+  pendingTargetReplacement = transaction;
+  document.body.dataset.retarget = 'preview';
+  syncTargetingOverlayVisibility();
+  ui.visibleObjectGate.hidden = true;
+  ui.newTargetGate.hidden = true;
+  clearHoveredObjectSuggestion();
+  setWork({
+    key: `retarget-preview-${originalRevision.key}`,
+    state: 'busy',
+    title: 'Previewing candidate target',
+    detail: 'Building a provisional 2D mask and 3D highlight before asking to switch.',
+  });
+
+  await beginSelection(
+    capturePoint.x,
+    capturePoint.y,
+    false,
+    suggestion,
+    originalActive.frame,
+    { recordHistory: false },
+  );
+  if (pendingTargetReplacement !== transaction) return;
+  transaction.candidateActive = state.active;
+  const candidateRevision = currentVisibleObjectRevision(transaction.candidateActive);
+  if (!candidateRevision || !state.selection.size
+    || transaction.frame !== state.active?.frame
+    || transaction.sceneRevision !== sceneContentRevision
+    || !currentSelectionAlignment(transaction.candidateActive).ok) {
+    cancelTargetReplacement();
+    setWork({
+      key: 'retarget-preview-failed',
+      state: 'error',
+      title: 'Candidate preview unavailable',
+      detail: 'The original target was restored. Hover a current cyan hint and try again.',
+    });
+    return;
+  }
+  transaction.status = 'decision';
+  transaction.candidateRevisionKey = candidateRevision.key;
+  document.body.dataset.retarget = 'decision';
+  ui.visibleObjectGate.hidden = true;
+  ui.newTargetGate.hidden = false;
+  positionTargetReplacementDecision();
+  setWork({
+    key: `retarget-decision-${candidateRevision.key}`,
+    state: 'ready',
+    title: 'Candidate target ready',
+    detail: 'Replace commits the highlighted candidate; Cancel restores the original draft.',
+  });
+}
+
+function replaceTargetFromProposal() {
+  const transaction = pendingTargetReplacement;
+  const candidateRevision = currentVisibleObjectRevision(state.active);
+  if (!transaction || transaction.status !== 'decision'
+    || state.active !== transaction.candidateActive
+    || candidateRevision?.key !== transaction.candidateRevisionKey
+    || !currentSelectionAlignment(state.active).ok) {
+    cancelTargetReplacement();
+    setWork({
+      key: 'replace-target-stale',
+      state: 'error',
+      title: 'Candidate target changed',
+      detail: 'The original draft was restored. Preview the target again.',
+    });
+    return;
+  }
+  state.selectionActionHistory.push({
+    ...transaction.original,
+    label: 'Switch target',
+  });
+  if (state.selectionActionHistory.length > 12) state.selectionActionHistory.shift();
+  pendingTargetReplacement = null;
+  ui.newTargetGate.hidden = true;
+  document.body.dataset.retarget = 'locked';
+  syncTargetingOverlayVisibility();
+  syncVisibleObjectConfirmation();
+  setWork({
+    key: `replace-target-${candidateRevision.key}`,
+    state: 'ready',
+    title: 'Target switched',
+    detail: `${state.selection.size.toLocaleString()} candidate splats are now the active draft.`,
+  });
+}
+
+function returnToCapturedTargetView() {
+  const active = state.active;
+  const frame = active?.frame;
+  if (!frame || frame !== state.frozen?.frame || !state.splat || !state.selection.size) return;
+  const preflight = currentSelectionReturnPreflight(active);
+  if (!preflight.ok) {
+    exposeSelectionAlignmentFailure(
+      active,
+      preflight.reason === 'css-viewport'
+        ? 'The browser viewport size changed. Resize it back or Clear the draft and select again.'
+        : `The captured view cannot be restored (${preflight.reason}).`,
+      preflight.reason,
+    );
+    return;
+  }
+  const capturedView = new THREE.Matrix4().fromArray(frame.camera.viewMatrix);
+  const capturedWorld = capturedView.clone().invert();
+  capturedWorld.decompose(camera.position, camera.quaternion, camera.scale);
+  camera.projectionMatrix.fromArray(frame.camera.projectionMatrix);
+  camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+  camera.updateMatrixWorld(true);
+
+  const analysis = analyzeSelectedObject({
+    centers: state.splat.centers,
+    selection: state.selection,
+    camera,
+  });
+  active.sceneOrbitCentre = analysis.centre.clone();
+  active.sceneOrbitPivotSet = true;
+  active.targetControlsActivated = false;
+  controls.target.copy(active.sceneOrbitCentre);
+  controls.enablePan = false;
+  const restoredParity = currentSelectionFrameParity(active);
+  if (!restoredParity.ok) {
+    exposeSelectionAlignmentFailure(
+      active,
+      restoredParity.reason === 'css-viewport'
+        ? 'The browser viewport size changed. Resize it back or Clear the draft and select again.'
+        : `The captured view could not be restored (${restoredParity.reason}).`,
+    );
+    return;
+  }
+  ui.selectionAlignmentGate.hidden = true;
+  renderEditableProjection();
+  renderSelectionOutline(
+    active.currentMask,
+    active.maskW,
+    active.maskH,
+    active.controlDiff?.baseMask,
+  );
+  syncVisibleObjectConfirmation();
+  setWork({
+    key: `selection-view-restored-${frame.id}`,
+    state: 'ready',
+    title: 'Captured target view restored',
+    detail: 'The existing mask, 3D selection, edits, and revision were preserved.',
+  });
+}
+
+ui.replaceTarget.addEventListener('click', replaceTargetFromProposal);
+ui.cancelReplaceTarget.addEventListener('click', cancelTargetReplacement);
+ui.recaptureTarget.addEventListener('click', returnToCapturedTargetView);
+
 renderer.domElement.addEventListener('pointerdown', (e) => {
-  if (e.button !== 0 || state.exploration) return;
+  if (e.button !== 0 || currentInputOwner() !== 'scene-selection') return;
   pointerDownAt = { x: e.clientX, y: e.clientY };
 });
 
@@ -3236,7 +4405,26 @@ renderer.domElement.addEventListener('pointerup', async (e) => {
   const moved = Math.hypot(e.clientX - pointerDownAt.x, e.clientY - pointerDownAt.y);
   pointerDownAt = null;
   if (moved > 4) return;              // that was an orbit, not a click
-  if (!state.splat || state.multiview.session || state.exploration) return;
+  if (!state.splat || state.multiview.session
+    || currentInputOwner() !== 'scene-selection') return;
+  if (e.shiftKey) {
+    setWork({
+      key: 'multi-object-not-available',
+      state: 'ready',
+      title: 'One object at a time',
+      detail: 'Scene Shift-click is disabled. Use Edit 2D mask to erase an unwanted area, or Clear before choosing another object.',
+    });
+    return;
+  }
+  if (state.active?.currentMask) {
+    if (clickHitsCurrentSelection(e.clientX, e.clientY)) {
+      cancelTargetReplacement();
+      refocusCurrentSceneTarget();
+    } else {
+      await proposeTargetReplacement(e);
+    }
+    return;
+  }
   const rect = renderer.domElement.getBoundingClientRect();
   const frozenFrame = state.frozen?.frame;
   camera.updateMatrixWorld(true);
@@ -3284,6 +4472,15 @@ renderer.domElement.addEventListener('pointerup', async (e) => {
 
 async function executeSelectionIntent(intent) {
   if (!state.splat || !state.encoded || state.busy) return;
+  if (intent.subtract) {
+    setWork({
+      key: 'stale-subtractive-click',
+      state: 'ready',
+      title: 'Scene Shift-click ignored',
+      detail: 'Multi-object and subtractive scene clicks are not available. Edit the current 2D mask instead.',
+    });
+    return;
+  }
   if (intent.viewRevision !== viewRevision) {
     setWork({
       key: `stale-click-${viewRevision}`,
@@ -3358,14 +4555,20 @@ async function beginSelection(
   subtract,
   detectorSuggestion = null,
   frame = state.frozen?.frame,
+  { recordHistory = true } = {},
 ) {
+  if (subtract) {
+    throw new Error('Subtractive Scene selections are disabled; edit the 2D mask instead.');
+  }
   assertSelectionFrame(frame, {
     viewRevision,
     sceneRevision: sceneContentRevision,
     framebufferWidth: renderer.domElement.width,
     framebufferHeight: renderer.domElement.height,
   });
-  pushSelectionActionHistory(subtract ? 'Remove selected region' : 'Select object');
+  if (recordHistory) {
+    pushSelectionActionHistory(subtract ? 'Remove selected region' : 'Select object');
+  }
   setProjectionEditorOpen(false);
   const operationBaseSelection = subtract
     ? new Set(state.selection)
@@ -3384,7 +4587,6 @@ async function beginSelection(
     state.gaussianCleanupUndo = null;
   }
   const usesYoloBox = isYoloSuggestion(detectorSuggestion);
-  const usesClassicRegion = detectorSuggestion?.source === 'classic-fill';
   // YOLO identifies which target the user means, but its axis-aligned box is
   // not an object boundary. A point prompt lets SAM recover the full silhouette
   // even when the detector box is loose, truncated, or simply wrong.
@@ -3402,8 +4604,8 @@ async function beginSelection(
     baseForcedProvisional: operationBaseForcedProvisional,
     subtract,
     replace: !subtract,
-    sources: new Set(usesClassicRegion ? ['auto', 'fill'] : ['auto']),
-    fusion: usesClassicRegion ? 'smart' : state.fusion,
+    sources: new Set(state.configuredSources),
+    fusion: state.fusion,
     extent: state.extent,
     samResults: new Map(),
     manualEdits: null,
@@ -3416,7 +4618,17 @@ async function beginSelection(
     growCache: null,
     maskConfidence: null,
     modelConfidence: usesYoloBox ? detectorSuggestion.score : 0.82,
+    maskRevision: 0,
+    selectionRevision: 0,
+    visibleObjectGate: createVisibleObjectGate(),
+    sceneOrbitPivotSet: false,
+    sceneOrbitCentre: null,
+    targetControlsActivated: false,
   };
+  if (pendingTargetReplacement?.status === 'previewing'
+    && pendingTargetReplacement.frame === frame) {
+    pendingTargetReplacement.candidateActive = state.active;
+  }
   if (!subtract) {
     state.locked.fill(0);
     state.manualExcluded.clear();
@@ -3426,6 +4638,8 @@ async function beginSelection(
   setFusionUI(state.active.fusion);
   setBorderEditMode('off');
   setExtentUI(state.extent);
+  ui.targetingSetup.open = false;
+  ui.targetingSetupState.textContent = 'configured for this object';
   ui.selectionProps.hidden = false;
   document.body.dataset.inspector = 'true';
   await runActiveSelection();
@@ -3446,6 +4660,10 @@ async function runActiveSelection() {
     throw error;
   }
   if (state.frozen.frame !== active.frame) return;
+  if (!currentSelectionFrameParity(active).ok) {
+    exposeSelectionAlignmentFailure(active, 'The camera changed before object finding began.');
+    return;
+  }
   if (state.busy) {
     clearTimeout(activeSelectionTimer);
     activeSelectionTimer = setTimeout(runActiveSelection, 80);
@@ -3453,6 +4671,8 @@ async function runActiveSelection() {
   }
 
   setBusy('mask generation');
+  const controlsWereEnabled = controls.enabled;
+  controls.enabled = false;
   const requestToken = active.requestToken;
   const t0 = performance.now();
   const usesModel = active.sources.has('auto');
@@ -3485,6 +4705,7 @@ async function runActiveSelection() {
       })));
     if (state.active !== active || requestToken !== active.requestToken
       || state.frozen?.frame !== active.frame) return;
+    assertCurrentSelectionFrameParity(active);
 
     setWork({
       key: `selection-${requestToken}`,
@@ -3521,6 +4742,7 @@ async function runActiveSelection() {
       else if (active.manualEdits[i] < 0) mask[i] = 0;
     }
     active.currentMask = mask;
+    active.maskRevision++;
     active.maskW = maskW;
     active.maskH = maskH;
     active.resolvedSources = resolved;
@@ -3545,6 +4767,7 @@ async function runActiveSelection() {
 
     await applySelectionMask(active, mask, maskW, maskH, requestToken);
     if (state.active !== active || requestToken !== active.requestToken) return;
+    assertCurrentSelectionFrameParity(active);
     const elapsed = Math.round(performance.now() - t0);
     setStatus(`Ready · ${(elapsed / 1000).toFixed(elapsed < 1000 ? 2 : 1)}s`, 'ready');
     setWork({
@@ -3557,7 +4780,13 @@ async function runActiveSelection() {
     });
   } catch (err) {
     if (err.name === 'AbortError' || state.active !== active
-      || requestToken !== active.requestToken) return;
+      || requestToken !== active.requestToken) {
+      if (state.active === active && requestToken === active.requestToken
+        && !currentSelectionFrameParity(active).ok) {
+        exposeSelectionAlignmentFailure(active, err.message);
+      }
+      return;
+    }
     console.error(err);
     setStatus(`select failed: ${err.message}`, '');
     ui.selectionResult.textContent = 'failed';
@@ -3569,9 +4798,9 @@ async function runActiveSelection() {
     });
   } finally {
     clearBusy('mask generation');
+    if (!state.multiview.session) controls.enabled = controlsWereEnabled;
     if (state.active === active && requestToken === active.requestToken) {
       flushPendingSelection();
-      scheduleAutomaticMultiview('Visible mask ready');
     }
   }
 }
@@ -3631,6 +4860,7 @@ async function applySelectionMask(active, mask, maskW, maskH, requestToken = act
     throw new DOMException('Selection superseded', 'AbortError');
   }
 
+  assertCurrentSelectionFrameParity(active);
   const slack = state.slack * scale;
   let lifted = active.liftCache;
   if (!lifted || lifted.mask !== mask || lifted.slack !== slack
@@ -3654,6 +4884,7 @@ async function applySelectionMask(active, mask, maskW, maskH, requestToken = act
     };
     active.liftCache = lifted;
   }
+  assertCurrentSelectionFrameParity(active);
   const { seeds, proj } = lifted;
   const liftElapsed = performance.now() - visibleSideStartedAt;
 
@@ -3686,6 +4917,7 @@ async function applySelectionMask(active, mask, maskW, maskH, requestToken = act
     throw new DOMException('Selection superseded', 'AbortError');
   }
 
+  assertCurrentSelectionFrameParity(active);
   // A dense footprint-aware mask already supplies the surface. Launching a
   // neighborhood search from tens of thousands of seeds repeats the same
   // dense-cell queries and can take minutes. Only bridge sparse masks here;
@@ -3847,6 +5079,8 @@ async function applySelectionMask(active, mask, maskW, maskH, requestToken = act
   ui.selectionMeta.title =
     `2D coverage ${maskPercent.toFixed(maskPercent < 1 ? 2 : 1)}% · `
     + `${refined.candidateCount.toLocaleString()} points evaluated`;
+  active.selectionRevision++;
+  publishVisibleObjectConfirmation(active);
 }
 
 // ------------------------------------------------------------- loading -----
@@ -3900,6 +5134,8 @@ async function loadSplatInner(url, filename, loadId) {
   sceneContentRevision++;
   clearTimeout(encodeTimer);
   clearObjectSuggestions();
+  clearObjectPreviewBuffer();
+  objectCardPreview.update({});
 
   // Tear the previous scene down completely. Leaving state.splat set would keep
   // the render loop driving a detached viewer, and the old highlight Points
@@ -3935,7 +5171,7 @@ async function loadSplatInner(url, filename, loadId) {
   ui.selectionProps.dataset.scanning = 'false';
   state.calibratedViews = null;
   refreshMultiviewCapability();
-  ui.objectPreviewHud.hidden = true;
+  ui.objectPreviewHud.hidden = false;
   state.grid = null;
   state.sceneFrame = null;
   state.automaticHome = null;
@@ -4140,6 +5376,7 @@ const selectionMethod = document.getElementById('selectionMethod');
 const selectionSources = listSelectionSources();
 for (const source of selectionSources) {
   const button = document.createElement('button');
+  button.type = 'button';
   button.dataset.method = source.id;
   button.textContent = source.label;
   button.dataset.tip = source.description;
@@ -4178,6 +5415,13 @@ function setMethodUI(sources) {
   ui.radiusProps.hidden = !panels.has('radius');
   ui.fusionProps.hidden = sources.size < 2;
   document.getElementById('extent').hidden = !panels.has('auto');
+  const labels = [...sources].map((id) => getSelectionSource(id).label);
+  ui.targetingMethodHint.textContent = sources.size > 1
+    ? `${labels.join(' + ')} will recompute exact masks and combine them using the selected rule.`
+    : getSelectionSource([...sources][0] ?? 'auto').description;
+  ui.targetingSetupState.textContent = state.active
+    ? `${labels.join(' + ')} for current object`
+    : `${labels.join(' + ')} before click`;
 }
 
 function setExtentUI(extent) {
@@ -4211,14 +5455,31 @@ function setBorderEditMode(mode) {
   }
   if (mode === 'off') document.getElementById('projectionMaskOptions').open = false;
   if (!mode.startsWith('polygon')) cancelPolygonEdit();
+  if (state.active?.currentMask) renderEditableProjection();
+}
+
+function syncSelectionInspector() {
+  const awaitingClick = !state.active;
+  if (!state.exploration && awaitingClick) {
+    ui.selectionProps.hidden = false;
+    document.body.dataset.inspector = 'true';
+    ui.targetingSetup.open = true;
+    ui.preselectionOptions.hidden = false;
+    ui.openSelectionSetup.setAttribute('aria-expanded', 'true');
+    ui.openSelectionSetup.textContent = 'Hide settings';
+  }
+  document.getElementById('closeProps').hidden = awaitingClick;
+  ui.targetingSetupState.textContent = awaitingClick
+    ? `${[...state.configuredSources].map((id) => getSelectionSource(id).label).join(' + ')} before click`
+    : `${[...state.active.sources].map((id) => getSelectionSource(id).label).join(' + ')} for current object`;
+  syncVisibleObjectConfirmation();
 }
 
 function setProjectionEditorOpen(open) {
   const opening = Boolean(open && state.active?.currentMask);
-  if (opening) {
-    // Novel-view sorting/readback still happens in this browser even though
-    // SAM 3.1 inference is remote. Editing must preempt that renderer work.
-    stopMultiviewForSeedEdit('All-sides scan paused while you edit the visible mask');
+  const wasOpen = state.projectionEditorOpen;
+  if (opening && !wasOpen) {
+    projectionEditorRestartScan = Boolean(state.multiview.session);
   }
   state.projectionEditorOpen = opening;
   ui.projectionPip.dataset.editorOpen = String(state.projectionEditorOpen);
@@ -4229,11 +5490,19 @@ function setProjectionEditorOpen(open) {
   ui.projectionEditorBack.hidden = !state.projectionEditorOpen;
   if (state.projectionEditorOpen) {
     ui.multiviewStatus.textContent =
-      'All-sides fill will restart after the 2D mask editor closes';
+      projectionEditorRestartScan
+        ? 'All-sides fill continues safely while you inspect the visible starting mask'
+        : 'Inspecting the visible starting mask · edits stay with this workspace';
     return;
   }
   setBorderEditMode('off');
-  scheduleAutomaticMultiview('Edited mask ready', 700);
+  if (wasOpen) {
+    recoverVisibleScene('mask-editor-close', { forceSort: true });
+    ui.multiviewStatus.textContent = projectionEditorRestartScan
+      ? 'Edited mask ready · confirm the visible 3D object before scanning again'
+      : 'Starting mask editor closed · scene restored';
+    projectionEditorRestartScan = false;
+  }
   setTimeout(() => {
     if (!state.projectionEditorOpen && state.active?.currentMask) {
       ui.projectionEditorOpen.hidden = false;
@@ -4243,6 +5512,7 @@ function setProjectionEditorOpen(open) {
 
 function scheduleActiveSelection(delay = 80) {
   if (!state.active) return;
+  invalidateVisibleObjectConfirmation(state.active);
   markObjectPreviewUpdating('Updating object…');
   state.active.requestToken++;
   clearTimeout(activeSelectionTimer);
@@ -4252,6 +5522,7 @@ function scheduleActiveSelection(delay = 80) {
 function schedule3DCompletion(delay = 60, { relift = false } = {}) {
   const active = state.active;
   if (!active?.currentMask) return;
+  invalidateVisibleObjectConfirmation(active);
   markObjectPreviewUpdating('Updating 3D result…');
   active.requestToken++;
   if (relift) active.liftCache = null;
@@ -4322,21 +5593,22 @@ async function run3DCompletion(active, requestToken) {
 }
 
 methodButtons.forEach((button) => button.addEventListener('click', (event) => {
-  if (!state.active) return;
-  beginControlDiff('source', `${button.textContent.trim()} starting method`);
-  const source = button.dataset.method;
-  if (event.shiftKey) {
-    if (state.active.sources.has(source) && state.active.sources.size > 1) {
-      state.active.sources.delete(source);
-    } else {
-      state.active.sources.add(source);
-    }
-  } else {
-    state.active.sources = new Set([source]);
+  if (state.active) {
+    beginControlDiff('source', `${button.textContent.trim()} starting method`);
   }
-  setMethodUI(state.active.sources);
-  scheduleActiveSelection(0);
-  releaseControlDiff('source');
+  const source = button.dataset.method;
+  const sources = updateTargetingSources(
+    state.active?.sources ?? state.configuredSources,
+    source,
+    event.shiftKey,
+  );
+  state.configuredSources = new Set(sources);
+  if (state.active) state.active.sources = new Set(sources);
+  setMethodUI(sources);
+  if (state.active) {
+    scheduleActiveSelection(0);
+    releaseControlDiff('source');
+  }
 }));
 
 fusionButtons.forEach((button) => button.addEventListener('click', () => {
@@ -4374,6 +5646,11 @@ extentButtons.forEach((button) => button.addEventListener('click', () => {
   scheduleActiveSelection(0);
   releaseControlDiff('extent');
 }));
+
+setMethodUI(state.configuredSources);
+setFusionUI(state.fusion);
+setExtentUI(state.extent);
+syncSelectionInspector();
 
 modelButtons.forEach((button) => button.addEventListener('click', () => {
   activateSegmentationModel(button.dataset.model);
@@ -4498,6 +5775,7 @@ async function activateSegmentationModel(profile) {
 
   if (!switched || switchRun !== modelSwitchRun
     || state.active !== active || revision !== viewRevision) return;
+  invalidateVisibleObjectConfirmation(state.active);
   state.active.requestToken++;
   await runActiveSelection();
   releaseControlDiff('model');
@@ -4713,6 +5991,7 @@ function setGaussianCleanup(enabled) {
   objectPreview.setEditMode(state.gaussianCleanup ? 'cleanup' : 'view');
   if (state.gaussianCleanup) {
     objectPreview.setSpin(false);
+    objectCardPreview.setSpin(false);
     document.getElementById('previewSpin').setAttribute('aria-pressed', 'false');
     ui.objectPreviewStatus.textContent = 'Brush unwanted 3D splats away';
   } else {
@@ -4724,12 +6003,13 @@ document.getElementById('previewSpin').addEventListener('click', (event) => {
   const next = event.currentTarget.getAttribute('aria-pressed') !== 'true';
   event.currentTarget.setAttribute('aria-pressed', String(next));
   objectPreview.setSpin(next);
+  objectCardPreview.setSpin(next);
 });
 document.getElementById('previewReset').addEventListener('click', () => objectPreview.resetView());
 ui.previewCleanup.addEventListener('click', () => {
   setGaussianCleanup(!state.gaussianCleanup);
 });
-ui.open2dMaskEditor.addEventListener('click', () => setProjectionEditorOpen(true));
+ui.open2dMaskEditor.addEventListener('click', () => setWorkspace('mask'));
 ui.startHologramCleanup.addEventListener('click', () => {
   setGaussianCleanup(!state.gaussianCleanup);
 });
@@ -4753,11 +6033,10 @@ document.getElementById('previewEdit').addEventListener('click', () => {
 });
 
 ui.openSelectionSetup.addEventListener('click', () => {
-  ui.selectionProps.hidden = false;
-  document.body.dataset.inspector = 'true';
-  const advanced = document.getElementById('advancedWorkflow');
-  advanced.open = true;
-  advanced.querySelector('details.inspector-step').open = true;
+  const expanded = ui.preselectionOptions.hidden;
+  ui.preselectionOptions.hidden = !expanded;
+  ui.openSelectionSetup.setAttribute('aria-expanded', String(expanded));
+  ui.openSelectionSetup.textContent = expanded ? 'Hide settings' : 'Show settings';
 });
 
 ui.suggestionsToggle.addEventListener('click', () => {
@@ -4806,23 +6085,34 @@ bindSlider('multiviewConfidence', 'multiviewConfidenceV', (value) => {
 function refreshMultiviewCapability(error = '') {
   const ready = Boolean(state.splat && state.selection.size);
   const trackerReady = state.multiview.trackerStatus === 'ready';
+  const activeRevision = currentVisibleObjectRevision(state.active);
+  const objectConfirmed = Boolean(
+    activeRevision
+    && isVisibleObjectConfirmed(state.active.visibleObjectGate, activeRevision),
+  );
   const trackerPreparing = state.multiview.trackerStatus === 'waiting-checkpoint'
     || state.multiview.trackerStatus === 'loading'
     || state.multiview.trackerStatus === 'checking';
   ui.multiviewGate.dataset.ready = String(ready);
-  ui.multiviewControls.hidden = !ready || !trackerReady;
+  ui.multiviewControls.hidden = !ready || !trackerReady || !objectConfirmed;
   startMultiviewButton.hidden = true;
-  ui.previewScan.hidden = true;
+  const scanRetry = Boolean(state.active?.scanRetry);
+  ui.previewScan.hidden = !scanRetry;
+  ui.previewScan.textContent = scanRetry ? 'Retry scan' : 'Scan all sides';
   if (ready) {
     ui.multiviewCapability.textContent = trackerReady
       ? state.multiview.session
         ? 'SAM 3 is filling the hidden sides'
-        : 'Automatic all-sides fill ready'
+        : objectConfirmed
+          ? 'Automatic all-sides fill ready'
+          : 'Confirm the visible 3D object first'
       : trackerPreparing
         ? 'All-sides scan · temporal tracker preparing'
         : 'Tracked all-sides scan unavailable';
     ui.multiviewCapabilityDetail.textContent = trackerReady
-      ? `Fast + YOLO supplies the visible seed. SAM 3.1 follows it through app-generated views on ${state.multiview.trackerDevice || 'the GPU'}; editing the 2D mask restarts the scan.`
+      ? objectConfirmed
+        ? `SAM 3.1 follows the confirmed visible object through app-generated views on ${state.multiview.trackerDevice || 'the GPU'}; editing the 2D mask returns to confirmation.`
+        : 'Check the highlighted splats in the main view. Tracking cannot begin until you choose Use this object.'
       : trackerPreparing
         ? 'Your current-view selection works now. SAM 3.1 will begin automatically as soon as it is ready.'
         : 'SAM 3.1 temporal tracking is required. Independent per-view masks are not presented as the same feature.';
@@ -4917,6 +6207,24 @@ function prepareTrackingSeed(seedMask, maskW, maskH, width, height) {
   return { canvas: multiviewSeedCanvas, mask: resizedMask };
 }
 
+function cameraFromSelectionFrame(frame) {
+  if (!frame?.camera?.viewMatrix || !frame.camera.projectionMatrix) return null;
+  const projection = new THREE.Matrix4().fromArray(frame.camera.projectionMatrix);
+  const p = projection.elements;
+  const fov = THREE.MathUtils.radToDeg(2 * Math.atan(1 / Math.max(1e-6, p[5])));
+  const aspect = p[5] / Math.max(1e-6, p[0]);
+  const near = Math.max(1e-5, p[14] / (p[10] - 1));
+  const far = Math.max(near * 2, p[14] / (p[10] + 1));
+  const source = new THREE.PerspectiveCamera(fov, aspect, near, far);
+  source.projectionMatrix.copy(projection);
+  source.projectionMatrixInverse.copy(projection).invert();
+  source.matrixWorldInverse.fromArray(frame.camera.viewMatrix);
+  source.matrixWorld.copy(source.matrixWorldInverse).invert();
+  source.matrixWorld.decompose(source.position, source.quaternion, source.scale);
+  source.updateMatrix();
+  return source;
+}
+
 function collectRefinementProjectionIndices(analysis) {
   const grid = state.grid;
   if (!grid?.start || !grid?.items) return null;
@@ -4964,7 +6272,18 @@ function collectRefinementProjectionIndices(analysis) {
 }
 
 startMultiviewButton.addEventListener('click', startMultiviewRefinement);
-ui.previewScan.addEventListener('click', startMultiviewRefinement);
+ui.previewScan.addEventListener('click', () => {
+  const active = state.active;
+  const revision = currentVisibleObjectRevision(active);
+  if (active?.scanRetry && revision) {
+    scanTray.begin({
+      id: `retry:${revision.key}`,
+      total: state.multiview.count,
+      pending: true,
+    });
+  }
+  startMultiviewRefinement();
+});
 pauseMultiviewButton.addEventListener('click', () => {
   const session = state.multiview.session;
   if (!session) return;
@@ -4989,6 +6308,51 @@ ui.multiviewEdit?.addEventListener('click', editMultiviewStartingMask);
 
 async function startMultiviewRefinement() {
   if (!state.splat || !state.selection.size) return;
+  if (pendingTargetReplacement) {
+    setWork({
+      key: 'retarget-decision-required',
+      state: 'ready',
+      title: 'Choose the target first',
+      detail: 'Replace or Cancel the candidate before scanning all sides.',
+    });
+    return;
+  }
+  const active = state.active;
+  const revision = currentVisibleObjectRevision(active);
+  const alignment = currentSelectionAlignment(active);
+  if (!alignment.ok) {
+    enforceSelectionAlignmentContainment();
+    exposeConfirmedScanFailure(
+      active,
+      revision,
+      'Selection alignment changed',
+      'Return to the captured target view before starting the all-sides scan.',
+    );
+    return;
+  }
+  if (!revision || !isVisibleObjectConfirmed(active.visibleObjectGate, revision)) {
+    ui.multiviewStatus.textContent =
+      'Confirm the highlighted visible 3D object before scanning all sides';
+    syncVisibleObjectConfirmation();
+    return;
+  }
+  if (active.confirmedScanRevisionKey && active.confirmedScanRevisionKey !== revision.key) {
+    exposeConfirmedScanFailure(
+      active,
+      revision,
+      'Confirmed target changed',
+      'The Selection frame or mask revision no longer matches the queued scan.',
+    );
+    return;
+  }
+  active.confirmedScanRevisionKey = revision.key;
+  active.confirmedScanPending = true;
+  if (!selectionMatchesConfirmedSnapshot(active)) {
+    invalidateVisibleObjectConfirmation(active);
+    ui.multiviewStatus.textContent =
+      'The highlighted splat set changed; confirm the current 3D object again';
+    return;
+  }
   if (state.projectionEditorOpen || state.editMode !== 'off') {
     ui.multiviewStatus.textContent =
       'All-sides fill is waiting for the 2D mask editor to close';
@@ -5002,6 +6366,8 @@ async function startMultiviewRefinement() {
       title: 'Tracked scan is not ready yet',
       detail: 'The current selection stays editable while SAM 3.1 finishes loading.',
     });
+    clearTimeout(automaticMultiviewTimer);
+    automaticMultiviewTimer = setTimeout(startMultiviewRefinement, 750);
     return;
   }
   if (state.multiview.session || state.busy) {
@@ -5011,6 +6377,10 @@ async function startMultiviewRefinement() {
       title: 'Object scan waiting',
       detail: `Waiting for ${state.busyReason || 'the current operation'}.`,
     });
+    if (!state.multiview.session) {
+      clearTimeout(automaticMultiviewTimer);
+      automaticMultiviewTimer = setTimeout(startMultiviewRefinement, 160);
+    }
     return;
   }
   if (modelViewEncodeRunning
@@ -5030,6 +6400,26 @@ async function startMultiviewRefinement() {
     automaticMultiviewTimer = setTimeout(startMultiviewRefinement, 160);
     return;
   }
+  const scanSourceCamera = cameraFromSelectionFrame(active.frame);
+  if (!scanSourceCamera) {
+    exposeConfirmedScanFailure(
+      active,
+      revision,
+      'Scan camera unavailable',
+      'The confirmed Selection frame cannot reconstruct its camera.',
+    );
+    return;
+  }
+  const consumed = consumeVisibleObjectStart(active.visibleObjectGate, revision);
+  if (!consumed.started) {
+    ui.multiviewStatus.textContent =
+      'This confirmed object revision already started or is no longer current';
+    return;
+  }
+  active.visibleObjectGate = consumed.gate;
+  active.confirmedScanPending = false;
+  active.scanRetry = null;
+  ui.visibleObjectGate.hidden = true;
   setGaussianCleanup(false);
   if (state.nearbyContext.enabled) setNearbyContext(false);
 
@@ -5047,11 +6437,11 @@ async function startMultiviewRefinement() {
   const analysis = analyzeSelectedObject({
     centers: state.splat.centers,
     selection: state.selection,
-    camera,
+    camera: scanSourceCamera,
   });
   const syntheticViews = generateSyntheticOrbitViews({
     analysis,
-    camera,
+    camera: scanSourceCamera,
     count: state.multiview.count,
     width,
     height,
@@ -5069,6 +6459,7 @@ async function startMultiviewRefinement() {
       projectionIndexSpace: null,
       projectionCache: null,
       trackingCutout: null,
+      captureResources: null,
     index: 0,
     evidence: null,
     baseSelection: new Set(state.selection),
@@ -5143,6 +6534,12 @@ async function startMultiviewRefinement() {
     state.multiview.trackerStatus = 'checking';
     finishMultiviewSession(session, 'SAM 3 is reconnecting');
     refreshTrackerCapability();
+    exposeConfirmedScanFailure(
+      active,
+      revision,
+      'Tracker connection failed',
+      'SAM 3.1 did not accept the confirmed scan session.',
+    );
     return;
   }
   setWork({
@@ -5209,6 +6606,12 @@ async function startMultiviewRefinement() {
   }
   if (!session.trackingCutout) {
     finishMultiviewSession(session, 'Could not prepare the offscreen object scan');
+    exposeConfirmedScanFailure(
+      active,
+      revision,
+      'Scan staging failed',
+      session.diagnostics.cutoutError ?? 'The resident object cutout could not be prepared.',
+    );
     return;
   }
   let branchFrames;
@@ -5216,8 +6619,28 @@ async function startMultiviewRefinement() {
     branchFrames = await stageTemporalTrackingFrames(session);
   } catch (error) {
     if (error.name === 'AbortError' || session.canceled) return;
-    console.warn('[tracking] could not stage the synthetic sequence', error);
-    finishMultiviewSession(session, 'Could not prepare the tracked orbit');
+    const latestCapture = session.diagnostics.blackCaptures.at(-1) ?? null;
+    session.diagnostics.stageError = {
+      source: 'stageTemporalTrackingFrames',
+      name: error?.name ?? 'Error',
+      message: error?.message ?? String(error),
+      capture: latestCapture,
+    };
+    console.error('[tracking] synthetic orbit preparation failed', {
+      ...session.diagnostics.stageError,
+      error,
+    });
+    finishMultiviewSession(
+      session,
+      `Tracked orbit failed · ${session.diagnostics.stageError.name}: `
+        + session.diagnostics.stageError.message,
+    );
+    exposeConfirmedScanFailure(
+      active,
+      revision,
+      'View rendering failed',
+      session.diagnostics.stageError.message,
+    );
     return;
   }
   const seedMask = state.active?.currentMask;
@@ -5253,6 +6676,12 @@ async function startMultiviewRefinement() {
   if (!temporalTracking) {
     finishMultiviewSession(session, 'Could not start SAM 3.1 temporal tracking');
     refreshTrackerCapability();
+    exposeConfirmedScanFailure(
+      active,
+      revision,
+      'Tracking start failed',
+      'SAM 3.1 could not start the confirmed revision.',
+    );
     return;
   }
   // The backend now owns the complete ordered sequence. Keep only the key
@@ -5766,10 +7195,6 @@ function finishMultiviewSession(session, title) {
   });
   if (session.trackingCutout) {
     refinementScene.remove(session.trackingCutout.object3D);
-    Promise.resolve(session.trackingCutout.dispose?.()).catch((error) => {
-      console.warn('[tracking] cutout cleanup failed', error);
-    });
-    session.trackingCutout = null;
   }
   session.stagedFrames.clear();
   session.stagedPoseFrames.clear();
@@ -5870,14 +7295,20 @@ function stopMultiviewForSeedEdit(
 function scheduleAutomaticMultiview(reason = 'selection ready', delay = 650) {
   clearTimeout(automaticMultiviewTimer);
   const active = state.active;
+  const revision = currentVisibleObjectRevision(active);
   if (!active?.currentMask || !state.selection.size
-    || state.multiview.trackerStatus !== 'ready'
+    || !revision
+    || !isVisibleObjectConfirmed(active.visibleObjectGate, revision)
+    || !selectionMatchesConfirmedSnapshot(active)
     || state.projectionEditorOpen
     || state.editMode !== 'off') return;
   const requestToken = active.requestToken;
   automaticMultiviewTimer = setTimeout(() => {
     if (state.active !== active || active.requestToken !== requestToken
       || state.multiview.session) return;
+    const currentRevision = currentVisibleObjectRevision(active);
+    if (!currentRevision || currentRevision.key !== revision.key
+      || !isVisibleObjectConfirmed(active.visibleObjectGate, currentRevision)) return;
     if (state.projectionEditorOpen || state.editMode !== 'off') {
       ui.multiviewStatus.textContent =
         'All-sides fill is waiting for the 2D mask editor to close';
@@ -5948,36 +7379,106 @@ function applyViewToCamera(view, targetCamera) {
   targetCamera.updateMatrixWorld(true);
 }
 
-function ensureRefinementRenderTarget(width, height) {
-  if (refinementReadback.target
-    && refinementReadback.width === width
-    && refinementReadback.height === height) {
-    return refinementReadback.target;
+function ensureRefinementCaptureResources(session, width, height) {
+  let resources = session.captureResources;
+  if (!resources) {
+    const canvas = document.createElement('canvas');
+    const captureRenderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: false,
+      alpha: false,
+      preserveDrawingBuffer: false,
+      powerPreference: 'high-performance',
+    });
+    captureRenderer.setPixelRatio(1);
+    resources = {
+      canvas,
+      renderer: captureRenderer,
+      target: null,
+      pixels: null,
+      image: null,
+      width: 0,
+      height: 0,
+      logicalSize: new THREE.Vector2(),
+      drawingBufferSize: new THREE.Vector2(),
+      dimensions: null,
+    };
+    session.captureResources = resources;
   }
-  refinementReadback.target?.dispose();
-  refinementReadback.target = new THREE.WebGLRenderTarget(width, height, {
-    depthBuffer: true,
-    stencilBuffer: false,
-    minFilter: THREE.LinearFilter,
-    magFilter: THREE.LinearFilter,
-    format: THREE.RGBAFormat,
-    type: THREE.UnsignedByteType,
+
+  const captureRenderer = resources.renderer;
+  captureRenderer.setPixelRatio(1);
+  if (resources.width !== width || resources.height !== height) {
+    captureRenderer.setSize(width, height, false);
+  }
+  captureRenderer.outputColorSpace = renderer.outputColorSpace;
+  captureRenderer.toneMapping = renderer.toneMapping;
+  captureRenderer.toneMappingExposure = renderer.toneMappingExposure;
+  captureRenderer.getSize(resources.logicalSize);
+  captureRenderer.getDrawingBufferSize(resources.drawingBufferSize);
+  resources.dimensions = inspectCaptureDimensions({
+    logicalWidth: resources.logicalSize.x,
+    logicalHeight: resources.logicalSize.y,
+    drawingBufferWidth: resources.drawingBufferSize.x,
+    drawingBufferHeight: resources.drawingBufferSize.y,
+    targetWidth: width,
+    targetHeight: height,
   });
-  refinementReadback.target.texture.colorSpace = renderer.outputColorSpace;
-  refinementReadback.pixels = new Uint8Array(width * height * 4);
-  refinementReadback.image = multiviewCaptureCtx.createImageData(width, height);
-  refinementReadback.width = width;
-  refinementReadback.height = height;
-  return refinementReadback.target;
+  if (!resources.dimensions.exact) {
+    throw new Error(
+      `Isolated renderer size mismatch: logical ${resources.logicalSize.x}×`
+        + `${resources.logicalSize.y}, drawing buffer ${resources.drawingBufferSize.x}×`
+        + `${resources.drawingBufferSize.y}, target ${width}×${height}`,
+    );
+  }
+
+  if (!resources.target || resources.width !== width || resources.height !== height) {
+    resources.target?.dispose();
+    resources.target = new THREE.WebGLRenderTarget(width, height, {
+      depthBuffer: true,
+      stencilBuffer: false,
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      format: THREE.RGBAFormat,
+      type: THREE.UnsignedByteType,
+    });
+    resources.pixels = new Uint8Array(width * height * 4);
+    resources.image = multiviewCaptureCtx.createImageData(width, height);
+    resources.width = width;
+    resources.height = height;
+  }
+  resources.target.texture.colorSpace = captureRenderer.outputColorSpace;
+  session.diagnostics.captureRenderer = 'dedicated-webgl';
+  session.diagnostics.captureDimensions = resources.dimensions;
+  session.diagnostics.memory.captureReadbackBytes =
+    resources.pixels.byteLength + resources.image.data.byteLength;
+  return resources;
 }
 
-function releaseRefinementRenderBuffers() {
-  refinementReadback.target?.dispose();
-  refinementReadback.target = null;
-  refinementReadback.pixels = null;
-  refinementReadback.image = null;
-  refinementReadback.width = 0;
-  refinementReadback.height = 0;
+function releaseRefinementRenderBuffers(session) {
+  const resources = session.captureResources;
+  if (resources) {
+    resources.target?.dispose();
+    resources.renderer.dispose();
+    resources.canvas.width = 1;
+    resources.canvas.height = 1;
+    resources.target = null;
+    resources.pixels = null;
+    resources.image = null;
+    session.captureResources = null;
+  }
+  if (session.trackingCutout) {
+    Promise.resolve(session.trackingCutout.dispose?.()).catch((error) => {
+      console.warn('[tracking] cutout cleanup failed', error);
+    });
+    session.trackingCutout = null;
+  }
+  if (session.fallbackCapturePoints) {
+    session.fallbackCapturePoints.geometry.dispose();
+    session.fallbackCapturePoints.material.dispose();
+    session.fallbackCapturePoints = null;
+    session.fallbackCaptureScene = null;
+  }
   for (const canvas of [
     multiviewCapture,
     multiviewSeedCanvas,
@@ -5993,7 +7494,7 @@ function releaseRefinementRenderBuffersWhenIdle(session) {
     setTimeout(() => releaseRefinementRenderBuffersWhenIdle(session), 16);
     return;
   }
-  releaseRefinementRenderBuffers();
+  releaseRefinementRenderBuffers(session);
 }
 
 async function stageTemporalTrackingFrames(session) {
@@ -6159,18 +7660,23 @@ async function drawStagedTrackingFrame(blob, view) {
  * GPU copy completes.
  */
 async function captureCheckedRefinementView(session, view, targetCamera) {
-  const maximumAttempts = 2;
+  const attempts = session.forceSynchronousReadback
+    ? [{ forceSynchronous: true, useFallbackPoints: false }]
+    : [
+      { forceSynchronous: false, useFallbackPoints: false },
+      { forceSynchronous: true, useFallbackPoints: false },
+    ];
   let rejectedAsynchronousFrame = false;
-  for (let attempt = 1; attempt <= maximumAttempts; attempt++) {
-    const forceSynchronous = Boolean(session.forceSynchronousReadback || attempt > 1);
+  for (let attemptIndex = 0; attemptIndex < attempts.length; attemptIndex++) {
+    const attempt = attempts[attemptIndex];
     const capture = await captureRefinementView(
       session,
       view,
       targetCamera,
-      { forceSynchronous },
+      attempt,
     );
     if (!capture.content.black) {
-      if (forceSynchronous && rejectedAsynchronousFrame
+      if (attempt.forceSynchronous && rejectedAsynchronousFrame
         && !session.forceSynchronousReadback) {
         session.forceSynchronousReadback = true;
         session.diagnostics.readbackFallback =
@@ -6183,7 +7689,7 @@ async function captureCheckedRefinementView(session, view, targetCamera) {
     const diagnostic = {
       viewId: view.id,
       label: view.label,
-      attempt,
+      attempt: attemptIndex + 1,
       content: capture.content,
       source: capture.source,
     };
@@ -6192,9 +7698,9 @@ async function captureCheckedRefinementView(session, view, targetCamera) {
       session.diagnostics.blackCaptures.push(diagnostic);
     }
     console.warn('[tracking] rejected black synthetic RGB frame', diagnostic);
-    if (attempt < maximumAttempts) {
+    if (attemptIndex + 1 < attempts.length) {
       ui.multiviewStatus.textContent =
-        `Rendering ${view.label ?? 'view'} again · the first RGB frame was empty`;
+        `Rendering ${view.label ?? 'view'} again · RGB frame was empty`;
       await yieldInteractiveFrame(session);
       if (session.canceled || state.multiview.session !== session) {
         throw new DOMException('Synthetic capture retry superseded', 'AbortError');
@@ -6202,27 +7708,141 @@ async function captureCheckedRefinementView(session, view, targetCamera) {
     }
   }
 
+  // A simple Points pass is diagnostic only. It can distinguish a native
+  // Gaussian draw failure from camera/target failure, but its pixels are never
+  // staged, uploaded, or accepted as object evidence.
+  ui.multiviewStatus.textContent =
+    `Checking ${view.label ?? 'view'} capture failure before stopping`;
+  let diagnosticProbe = null;
+  try {
+    await ensureFallbackCaptureScene(session);
+    const capture = await captureRefinementView(
+      session,
+      view,
+      targetCamera,
+      { forceSynchronous: true, useFallbackPoints: true },
+    );
+    diagnosticProbe = {
+      provider: capture.source.provider,
+      content: capture.content,
+      source: capture.source,
+      conclusion: capture.content.black
+        ? 'camera-target-or-readback-failure'
+        : 'native-gaussian-draw-failure',
+    };
+  } catch (error) {
+    diagnosticProbe = {
+      provider: 'bounded-point-diagnostic',
+      errorName: error?.name ?? 'Error',
+      message: error?.message ?? String(error),
+      conclusion: 'diagnostic-probe-failed',
+    };
+  }
+  session.diagnostics.captureFailureProbe = diagnosticProbe;
+  console.error('[tracking] discarded capture failure probe', diagnosticProbe);
   const error = new Error(
-    `Synthetic capture for ${view.label ?? view.id ?? 'view'} remained black after retry`,
+    `Synthetic capture for ${view.label ?? view.id ?? 'view'} remained black `
+      + `(${diagnosticProbe.conclusion})`,
   );
   error.name = 'BlackSyntheticFrameError';
   throw error;
+}
+
+async function ensureFallbackCaptureScene(session) {
+  if (session.fallbackCaptureScene) return session.fallbackCaptureScene;
+  const candidates = session.projectionIndices;
+  if (!candidates?.length) {
+    throw new Error('Bounded capture fallback has no isolated ROI points');
+  }
+  const capacity = Math.min(
+    FALLBACK_CAPTURE_MAX_POINTS,
+    candidates.length + session.baseSelection.size,
+  );
+  const positions = new Float32Array(capacity * 3);
+  const colors = new Uint8Array(capacity * 3);
+  let count = 0;
+  const writePoint = (index) => {
+    if (count >= capacity || index < 0 || index >= state.splat.count
+      || (state.splat.opacity?.[index] ?? 255) < 8) return;
+    const target = count * 3;
+    positions[target] = state.splat.centers[index * 3];
+    positions[target + 1] = state.splat.centers[index * 3 + 1];
+    positions[target + 2] = state.splat.centers[index * 3 + 2];
+    colors[target] = state.splat.colors?.[index * 3] ?? 220;
+    colors[target + 1] = state.splat.colors?.[index * 3 + 1] ?? 220;
+    colors[target + 2] = state.splat.colors?.[index * 3 + 2] ?? 220;
+    count++;
+  };
+  for (const index of session.baseSelection) {
+    writePoint(index);
+    if (count >= capacity) break;
+  }
+  const remaining = Math.max(1, capacity - count);
+  const stride = Math.max(1, Math.ceil(candidates.length / remaining));
+  for (let ordinal = 0; ordinal < candidates.length && count < capacity; ordinal += stride) {
+    const index = candidates[ordinal];
+    if (!session.baseSelection.has(index)) writePoint(index);
+    if (ordinal > 0 && ordinal % 100_000 < stride) {
+      await yieldInteractiveFrame(session);
+      if (session.canceled || state.multiview.session !== session) {
+        throw new DOMException('Fallback capture build superseded', 'AbortError');
+      }
+    }
+  }
+  if (!count) throw new Error('Bounded capture fallback contains no visible points');
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute(
+    'position',
+    new THREE.BufferAttribute(positions.subarray(0, count * 3), 3),
+  );
+  geometry.setAttribute(
+    'color',
+    new THREE.BufferAttribute(colors.subarray(0, count * 3), 3, true),
+  );
+  geometry.computeBoundingSphere();
+  const material = new THREE.PointsMaterial({
+    size: 3.2,
+    sizeAttenuation: false,
+    vertexColors: true,
+    transparent: false,
+    depthTest: true,
+    depthWrite: true,
+  });
+  const points = new THREE.Points(geometry, material);
+  points.frustumCulled = false;
+  const fallbackScene = new THREE.Scene();
+  fallbackScene.background = new THREE.Color(0x000000);
+  fallbackScene.add(points);
+  session.fallbackCaptureScene = fallbackScene;
+  session.fallbackCapturePoints = points;
+  session.diagnostics.memory.fallbackCaptureBytes =
+    positions.byteLength + colors.byteLength;
+  return fallbackScene;
 }
 
 async function captureRefinementView(
   session,
   view,
   targetCamera,
-  { forceSynchronous = false } = {},
+  {
+    forceSynchronous = false,
+    useFallbackPoints = false,
+  } = {},
 ) {
   const width = Math.max(1, Math.round(view.width || multiviewCapture.width || 768));
   const height = Math.max(1, Math.round(view.height || multiviewCapture.height || 512));
-  const target = ensureRefinementRenderTarget(width, height);
+  const resources = ensureRefinementCaptureResources(session, width, height);
+  const captureRenderer = resources.renderer;
+  const target = resources.target;
   const captureSource = session.trackingCutout;
-  const captureScene = refinementScene;
-  if (!captureSource) {
+  const captureScene = useFallbackPoints
+    ? session.fallbackCaptureScene
+    : refinementScene;
+  if (!captureSource && !useFallbackPoints) {
     throw new Error('Synthetic capture requires a resident Gaussian cutout');
   }
+  if (!captureScene) throw new Error('Synthetic capture scene is unavailable');
   const timings = {
     sortMs: 0,
     renderMs: 0,
@@ -6236,28 +7856,49 @@ async function captureRefinementView(
   session.capturing = true;
 
   try {
-    const cutoutObject = captureSource.object3D;
+    const targetPoint = Array.isArray(view.target)
+      ? new THREE.Vector3().fromArray(view.target)
+      : session.analysis.centre;
+    const clip = inspectSyntheticClipPlanes({
+      cameraDistance: targetCamera.position.distanceTo(targetPoint),
+      objectRadius: view.objectRadius ?? session.analysis.radius,
+      near: targetCamera.near,
+      far: targetCamera.far,
+    });
+    if (!clip.valid) {
+      throw new RangeError(
+        `Synthetic camera clips the selected object: near=${targetCamera.near}, `
+          + `far=${targetCamera.far}, distance=${clip.distance}, radius=${clip.objectRadius}`,
+      );
+    }
+    const cutoutObject = captureSource?.object3D;
     const cutoutMesh = cutoutObject?.splatMesh ?? cutoutObject?.viewer?.splatMesh;
+    const fallbackPoints = session.fallbackCapturePoints;
     source = {
-      count: captureSource.count ?? 0,
+      provider: useFallbackPoints ? 'bounded-point-fallback' : 'resident-gaussian-cutout',
+      count: useFallbackPoints
+        ? fallbackPoints?.geometry?.getAttribute('position')?.count ?? 0
+        : captureSource?.count ?? 0,
       objectVisible: cutoutObject?.visible !== false,
       splatVisible: cutoutMesh?.visible !== false,
       renderReady: cutoutObject?.viewer?.splatRenderReady ?? null,
       cameraLayerMask: targetCamera.layers.mask,
       objectLayerMask: cutoutObject?.layers?.mask ?? null,
-      outputColorSpace: String(renderer.outputColorSpace),
-      toneMapping: String(renderer.toneMapping),
-      exposure: renderer.toneMappingExposure,
+      outputColorSpace: String(captureRenderer.outputColorSpace),
+      toneMapping: String(captureRenderer.toneMapping),
+      exposure: captureRenderer.toneMappingExposure,
       width,
       height,
+      dimensions: resources.dimensions,
+      clip,
     };
     // The cutout is scan-owned and never mounted in the cockpit. Reassert its
     // renderability without touching the source scene or full-scene sorter.
-    if (cutoutObject) {
+    if (!useFallbackPoints && cutoutObject) {
       cutoutObject.visible = true;
       cutoutObject.updateMatrixWorld(true);
     }
-    if (cutoutMesh) {
+    if (!useFallbackPoints && cutoutMesh) {
       cutoutMesh.visible = true;
       cutoutMesh.frustumCulled = false;
     }
@@ -6265,15 +7906,28 @@ async function captureRefinementView(
     targetCamera.updateMatrixWorld(true);
     captureScene.updateMatrixWorld(true);
 
-    const sortStartedAt = performance.now();
-    await captureSource.prepareView(renderer, targetCamera);
-    timings.sortMs = performance.now() - sortStartedAt;
+    if (!useFallbackPoints) {
+      const sortStartedAt = performance.now();
+      await captureSource.prepareView(captureRenderer, targetCamera);
+      timings.sortMs = performance.now() - sortStartedAt;
+      Object.assign(source, captureSource.getRenderDiagnostics?.() ?? {});
+      source.viewerDimensionsExact = Array.isArray(source.viewport)
+        && source.viewport[0] === width
+        && source.viewport[1] === height
+        && source.devicePixelRatio === 1;
+      if (!source.viewerDimensionsExact) {
+        throw new Error(
+          `Gaussian cutout viewport mismatch: viewer `
+            + `${source.viewport?.join('×') ?? 'unknown'}, DPR ${source.devicePixelRatio}, `
+            + `target ${width}×${height}`,
+        );
+      }
+    }
     if (session.canceled || state.multiview.session !== session) {
       throw new DOMException('View capture superseded', 'AbortError');
     }
 
     const renderStartedAt = performance.now();
-    const rendererState = refinementCaptureRendererState.capture();
     let readback = null;
     let readbackStartedAt = 0;
     try {
@@ -6283,45 +7937,51 @@ async function captureRefinementView(
       target.viewport.set(0, 0, width, height);
       target.scissor.set(0, 0, width, height);
       target.scissorTest = false;
-      target.texture.colorSpace = renderer.outputColorSpace;
-      renderer.setRenderTarget(target);
-      renderer.autoClear = false;
-      renderer.setClearColor(0x000000, 1);
-      renderer.clear(true, true, true);
-      // DropInViewer updates itself from its onBeforeRender callback. Calling
-      // update() here as well would ask its sorter to inspect the same camera
-      // twice for every synthetic frame.
-      renderer.render(captureScene, targetCamera);
+      target.texture.colorSpace = captureRenderer.outputColorSpace;
+      captureRenderer.setRenderTarget(target);
+      captureRenderer.autoClear = false;
+      captureRenderer.setClearColor(0x000000, 1);
+      captureRenderer.clear(true, true, true);
+      captureRenderer.info.reset();
+      captureRenderer.render(captureScene, targetCamera);
       timings.renderMs = performance.now() - renderStartedAt;
+      source.draw = {
+        calls: captureRenderer.info.render.calls,
+        triangles: captureRenderer.info.render.triangles,
+        points: captureRenderer.info.render.points,
+        lines: captureRenderer.info.render.lines,
+      };
 
       const asyncReadback = !forceSynchronous
-        && typeof renderer.readRenderTargetPixelsAsync === 'function';
+        && typeof captureRenderer.readRenderTargetPixelsAsync === 'function';
       source.readback = asyncReadback ? 'asynchronous' : 'synchronous';
       readbackStartedAt = performance.now();
       readback = asyncReadback
-        ? renderer.readRenderTargetPixelsAsync(
+        ? captureRenderer.readRenderTargetPixelsAsync(
           target,
           0,
           0,
           width,
           height,
-          refinementReadback.pixels,
+          resources.pixels,
         )
         : null;
       if (!asyncReadback) {
-        renderer.readRenderTargetPixels(
+        captureRenderer.readRenderTargetPixels(
           target,
           0,
           0,
           width,
           height,
-          refinementReadback.pixels,
+          resources.pixels,
         );
       }
     } finally {
-      // No shared renderer state is held across the asynchronous GPU fence.
-      rendererState.restore();
-      lastCockpitRenderedAt = 0;
+      // The scan renderer has no visible framebuffer, but unbind its target
+      // before awaiting the GPU fence so cancellation can never expose or hold
+      // mutable target state across a yield.
+      captureRenderer.setRenderTarget(null);
+      captureRenderer.autoClear = true;
     }
     if (readback) await readback;
     timings.readbackMs = performance.now() - readbackStartedAt;
@@ -6329,18 +7989,18 @@ async function captureRefinementView(
       throw new DOMException('View capture superseded', 'AbortError');
     }
 
-    content = analyzeCaptureContent(refinementReadback.pixels, width, height);
+    content = analyzeRgbaFrame(resources.pixels, width, height);
     const copyStartedAt = performance.now();
     if (multiviewCapture.width !== width || multiviewCapture.height !== height) {
       multiviewCapture.width = width;
       multiviewCapture.height = height;
     }
-    const image = refinementReadback.image;
+    const image = resources.image;
     const rowBytes = width * 4;
     for (let y = 0; y < height; y++) {
       const sourceOffset = (height - 1 - y) * rowBytes;
       image.data.set(
-        refinementReadback.pixels.subarray(sourceOffset, sourceOffset + rowBytes),
+        resources.pixels.subarray(sourceOffset, sourceOffset + rowBytes),
         y * rowBytes,
       );
     }
@@ -6353,54 +8013,398 @@ async function captureRefinementView(
   return { width, height, timings, content, source };
 }
 
-function analyzeCaptureContent(pixels, width, height, maximumSamples = 16_384) {
-  const pixelCount = Math.max(0, Math.min(width * height, pixels.length / 4));
-  const stride = Math.max(1, Math.ceil(pixelCount / maximumSamples));
-  let samples = 0;
-  let litSamples = 0;
-  let transparentSamples = 0;
-  let luminanceTotal = 0;
-  let maximumLuminance = 0;
-  for (let pixel = 0; pixel < pixelCount; pixel += stride) {
-    const offset = pixel * 4;
-    const luminance = pixels[offset] * 0.2126
-      + pixels[offset + 1] * 0.7152
-      + pixels[offset + 2] * 0.0722;
-    luminanceTotal += luminance;
-    maximumLuminance = Math.max(maximumLuminance, luminance);
-    if (luminance >= 6) litSamples++;
-    if (pixels[offset + 3] < 8) transparentSamples++;
-    samples++;
-  }
-  const litFraction = samples ? litSamples / samples : 0;
-  return Object.freeze({
-    samples,
-    stride,
-    meanLuminance: samples ? luminanceTotal / samples : 0,
-    maximumLuminance,
-    litFraction,
-    transparentFraction: samples ? transparentSamples / samples : 0,
-    // Requiring both no meaningfully lit sample and a tiny peak avoids
-    // rejecting legitimately dark scenes while still catching an empty clear.
-    black: samples === 0 || (litSamples === 0 && maximumLuminance < 3),
-  });
-}
-
-function projectSelectionCentroid(width, height) {
-  if (!state.selection.size) return null;
+function projectSelectionCentroid(width, height, frame = state.active?.frame) {
+  if (!state.selection.size || !frame?.camera?.viewProjectionMatrix) return null;
   const centre = new THREE.Vector3();
   for (const index of state.selection) {
     centre.x += state.splat.centers[index * 3];
     centre.y += state.splat.centers[index * 3 + 1];
     centre.z += state.splat.centers[index * 3 + 2];
   }
-  centre.multiplyScalar(1 / state.selection.size).project(camera);
+  centre.multiplyScalar(1 / state.selection.size).applyMatrix4(
+    new THREE.Matrix4().fromArray(frame.camera.viewProjectionMatrix),
+  );
   if (centre.z < -1 || centre.z > 1 || Math.abs(centre.x) > 1 || Math.abs(centre.y) > 1) return null;
   return {
     x: (centre.x * 0.5 + 0.5) * width,
     y: (-centre.y * 0.5 + 0.5) * height,
   };
 }
+
+function currentVisibleObjectRevision(active = state.active) {
+  if (!active?.frame || !active.currentMask || !state.selection.size) return null;
+  return createVisibleObjectRevision({
+    frameId: active.frame.id,
+    frameRevision: active.frame.viewRevision,
+    sceneRevision: active.frame.sceneRevision,
+    maskRevision: active.maskRevision,
+    selectionRevision: active.selectionRevision,
+    requestToken: active.requestToken,
+    selectionCount: state.selection.size,
+  });
+}
+
+function currentSelectionReturnPreflight(active = state.active) {
+  const frame = active?.frame;
+  if (!frame || frame !== state.frozen?.frame) {
+    return Object.freeze({ ok: false, reason: 'selection-frame-identity' });
+  }
+  if (!active.currentMask || !active.liftCache
+    || active.liftCache.mask !== active.currentMask
+    || active.liftCache.projection !== state.frozen.projection) {
+    return Object.freeze({ ok: false, reason: 'projection-lift-revision' });
+  }
+  const viewport = renderer.domElement.getBoundingClientRect();
+  const overlayRect = ui.selectionOutline.hidden
+    ? viewport
+    : ui.selectionOutline.getBoundingClientRect();
+  return selectionReturnPreflight({
+    frame,
+    viewRevision: active.viewRevision,
+    sceneRevision: sceneContentRevision,
+    framebuffer: {
+      width: renderer.domElement.width,
+      height: renderer.domElement.height,
+    },
+    viewport,
+    crop: projectionDisplayCrop,
+    mask: { width: active.maskW, height: active.maskH },
+    overlay: {
+      width: ui.selectionOutline.width,
+      height: ui.selectionOutline.height,
+      clientRect: overlayRect,
+    },
+  });
+}
+
+function currentSelectionFrameParity(active = state.active) {
+  const frame = active?.frame;
+  if (!frame || frame !== state.frozen?.frame) {
+    return Object.freeze({ ok: false, reason: 'selection-frame-identity' });
+  }
+  try {
+    assertSelectionFrame(frame, {
+      viewRevision: active.viewRevision,
+      sceneRevision: sceneContentRevision,
+      framebufferWidth: renderer.domElement.width,
+      framebufferHeight: renderer.domElement.height,
+    });
+  } catch {
+    return Object.freeze({ ok: false, reason: 'frame-revision-or-framebuffer' });
+  }
+  const viewport = renderer.domElement.getBoundingClientRect();
+  const viewportMatches = ['left', 'top', 'width', 'height'].every((key) =>
+    Math.abs(Number(viewport[key]) - Number(frame.cssViewport[key])) <= 0.5);
+  if (!viewportMatches) return Object.freeze({ ok: false, reason: 'css-viewport' });
+  if (projectionDisplayCrop) {
+    const cropMatches = Math.abs(projectionDisplayCrop.x - frame.crop.x) <= 0.01
+      && Math.abs(projectionDisplayCrop.y - frame.crop.y) <= 0.01
+      && Math.abs(projectionDisplayCrop.w - frame.crop.width) <= 0.01
+      && Math.abs(projectionDisplayCrop.h - frame.crop.height) <= 0.01;
+    if (!cropMatches) return Object.freeze({ ok: false, reason: 'capture-crop' });
+  }
+  camera.updateMatrixWorld(true);
+  if (!viewMatricesMatch(frame.camera.viewMatrix, camera.matrixWorldInverse.elements)
+    || !viewMatricesMatch(frame.camera.projectionMatrix, camera.projectionMatrix.elements)) {
+    return Object.freeze({ ok: false, reason: 'camera-matrix' });
+  }
+  return Object.freeze({ ok: true, reason: null });
+}
+
+function assertCurrentSelectionFrameParity(active = state.active) {
+  const parity = currentSelectionFrameParity(active);
+  if (parity.ok) return parity;
+  throw new DOMException(
+    `Selection frame changed (${parity.reason})`,
+    'AbortError',
+  );
+}
+
+function exposeSelectionAlignmentFailure(
+  active,
+  detail = '',
+  reason = currentSelectionFrameParity(active).reason,
+) {
+  if (state.active !== active) return;
+  clearSelectionOutline();
+  ui.visibleObjectGate.hidden = true;
+  ui.confirmVisibleObject.disabled = true;
+  ui.selectionAlignmentGate.hidden = workspaceController.active !== 'scene'
+    || state.exploration;
+  ui.multiviewStatus.textContent =
+    'Selection alignment changed — return to the captured target view';
+  setWork({
+    key: `selection-alignment-${reason}`,
+    state: 'error',
+    title: 'Selection alignment changed',
+    detail: detail || 'Return to the captured view before using this 2D mask.',
+  });
+}
+
+function currentSelectionAlignment(active = state.active) {
+  if (!active?.frame || !active.currentMask || !state.frozen) {
+    return Object.freeze({ ok: false, reason: 'missing-selection-data' });
+  }
+  if (active.frame !== state.frozen.frame) {
+    return Object.freeze({ ok: false, reason: 'selection-frame-identity' });
+  }
+  if (!active.liftCache
+    || active.liftCache.mask !== active.currentMask
+    || active.liftCache.projection !== state.frozen.projection) {
+    return Object.freeze({ ok: false, reason: 'projection-lift-revision' });
+  }
+  const parity = currentSelectionFrameParity(active);
+  if (!parity.ok) return parity;
+  const viewport = renderer.domElement.getBoundingClientRect();
+  const overlayRect = ui.selectionOutline.hidden
+    ? viewport
+    : ui.selectionOutline.getBoundingClientRect();
+  return selectionAlignmentStatus({
+    frame: active.frame,
+    viewRevision: active.viewRevision,
+    sceneRevision: sceneContentRevision,
+    framebuffer: {
+      width: renderer.domElement.width,
+      height: renderer.domElement.height,
+    },
+    viewport,
+    viewMatrix: camera.matrixWorldInverse.elements,
+    projectionMatrix: camera.projectionMatrix.elements,
+    crop: projectionDisplayCrop,
+    mask: { width: active.maskW, height: active.maskH },
+    overlay: {
+      width: ui.selectionOutline.width,
+      height: ui.selectionOutline.height,
+      clientRect: overlayRect,
+    },
+  });
+}
+
+function enforceSelectionAlignmentContainment() {
+  const active = state.active;
+  if (!active?.currentMask || !state.selection.size) {
+    ui.selectionAlignmentGate.hidden = true;
+    return Object.freeze({ ok: false, reason: 'missing-selection-data' });
+  }
+  const alignment = currentSelectionAlignment(active);
+  scanDiagnostics.selectionAlignment = {
+    ...alignment,
+    at: performance.now(),
+    frameId: active.frame?.id ?? null,
+    capture: active.frame?.capture ?? null,
+    framebuffer: {
+      width: renderer.domElement.width,
+      height: renderer.domElement.height,
+    },
+  };
+  if (alignment.ok) {
+    ui.selectionAlignmentGate.hidden = true;
+    ui.confirmVisibleObject.disabled = Boolean(active.confirmedScanPending);
+    if (!state.exploration && workspaceController.active === 'scene') {
+      ui.selectionOutline.hidden = false;
+    }
+    return alignment;
+  }
+  ui.selectionOutline.hidden = true;
+  ui.visibleObjectGate.hidden = true;
+  ui.confirmVisibleObject.disabled = true;
+  ui.selectionAlignmentGate.hidden = !(
+    workspaceController.active === 'scene'
+    && !state.exploration
+  );
+  ui.multiviewStatus.textContent =
+    'Selection alignment changed — return to captured target view';
+  return alignment;
+}
+
+function positionVisibleObjectConfirmation() {
+  if (!enforceSelectionAlignmentContainment().ok
+    || ui.visibleObjectGate.hidden || !state.splat || !state.selection.size) return;
+  const projected = projectSelectionCentroid(
+    renderer.domElement.clientWidth,
+    renderer.domElement.clientHeight,
+    state.active?.frame,
+  );
+  if (!projected) {
+    ui.visibleObjectGate.hidden = true;
+    return;
+  }
+  const halfWidth = Math.min(260, Math.max(165, ui.visibleObjectGate.offsetWidth / 2));
+  ui.visibleObjectGate.style.left =
+    `${Math.max(halfWidth + 12, Math.min(innerWidth - halfWidth - 12, projected.x))}px`;
+  ui.visibleObjectGate.style.top =
+    `${Math.max(12, Math.min(innerHeight - 58, projected.y))}px`;
+}
+
+function syncVisibleObjectConfirmation() {
+  const active = state.active;
+  const revision = currentVisibleObjectRevision(active);
+  const candidateMatches = Boolean(
+    revision
+    && active.visibleObjectGate?.candidate?.key === revision.key,
+  );
+  const confirmed = Boolean(
+    candidateMatches
+    && isVisibleObjectConfirmed(active.visibleObjectGate, revision),
+  );
+  const alignment = active?.currentMask
+    ? enforceSelectionAlignmentContainment()
+    : { ok: false };
+  const show = alignment.ok
+    && candidateMatches
+    && !confirmed
+    && !pendingTargetReplacement
+    && workspaceController.active === 'scene'
+    && !state.projectionEditorOpen
+    && !state.multiview.session
+    && !state.exploration;
+  ui.visibleObjectGate.hidden = !show;
+  if (!show) return;
+  ui.visibleObjectCount.textContent =
+    `${revision.selectionCount.toLocaleString()} splats`;
+  positionVisibleObjectConfirmation();
+}
+
+function invalidateVisibleObjectConfirmation(
+  active = state.active,
+  { preserveCandidate = false } = {},
+) {
+  clearTimeout(automaticMultiviewTimer);
+  if (active) {
+    active.visibleObjectGate = invalidateVisibleObjectGate();
+    active.confirmedSelectionIds = null;
+    active.confirmedScanRevisionKey = null;
+    active.confirmedScanPending = false;
+    active.scanRetry = null;
+    if (preserveCandidate) {
+      const revision = currentVisibleObjectRevision(active);
+      if (revision) {
+        active.visibleObjectGate =
+          publishVisibleObjectCandidate(active.visibleObjectGate, revision);
+      }
+    }
+  }
+  ui.confirmVisibleObject.disabled = false;
+  ui.visibleObjectGate.hidden = true;
+  ui.selectionAlignmentGate.hidden = true;
+  refreshMultiviewCapability();
+}
+
+function publishVisibleObjectConfirmation(active) {
+  if (state.active !== active) return;
+  const revision = currentVisibleObjectRevision(active);
+  if (!revision) {
+    invalidateVisibleObjectConfirmation(active);
+    return;
+  }
+  active.visibleObjectGate =
+    publishVisibleObjectCandidate(active.visibleObjectGate, revision);
+  if (pendingTargetReplacement?.candidateActive === active) {
+    ui.visibleObjectGate.hidden = true;
+    refreshMultiviewCapability();
+    return;
+  }
+  ui.multiviewStatus.textContent =
+    'Visible side ready · confirm the highlighted 3D splats before scanning all sides';
+  refreshMultiviewCapability();
+  syncVisibleObjectConfirmation();
+}
+
+function exposeConfirmedScanFailure(active, revision, title, detail) {
+  if (state.active !== active) return;
+  const current = currentVisibleObjectRevision(active);
+  if (!current || current.key !== revision?.key) return;
+  active.visibleObjectGate = resetVisibleObjectStart(active.visibleObjectGate, current);
+  active.confirmedScanRevisionKey = null;
+  active.confirmedScanPending = false;
+  active.scanRetry = {
+    revisionKey: current.key,
+    title,
+    detail,
+  };
+  ui.confirmVisibleObject.disabled = false;
+  ui.previewScan.hidden = false;
+  ui.previewScan.disabled = false;
+  ui.previewScan.textContent = 'Retry scan';
+  ui.multiviewStatus.textContent = `${title} · ${detail}`;
+  setWork({
+    key: `scan-failed-${current.key}`,
+    state: 'error',
+    title,
+    detail: `${detail} · Retry scan is available in 3D Object controls.`,
+  });
+  refreshMultiviewCapability(detail);
+}
+
+function acceptVisibleObjectConfirmation() {
+  if (pendingTargetReplacement) return;
+  const active = state.active;
+  const revision = currentVisibleObjectRevision(active);
+  const alignment = currentSelectionAlignment(active);
+  if (!alignment.ok) {
+    enforceSelectionAlignmentContainment();
+    setWork({
+      key: `selection-alignment-${alignment.reason}`,
+      state: 'error',
+      title: 'Selection alignment changed',
+      detail: 'Return to the captured target view before starting the all-sides scan.',
+    });
+    return;
+  }
+  if (active?.confirmedScanRevisionKey === revision?.key) return;
+  const confirmation = confirmVisibleObject(active?.visibleObjectGate, revision);
+  if (!confirmation.accepted || state.active !== active) {
+    setWork({
+      key: 'visible-object-stale',
+      state: 'error',
+      title: 'Visible object changed',
+      detail: 'The 2D mask or 3D highlight changed. Check the current result before confirming again.',
+    });
+    syncVisibleObjectConfirmation();
+    return;
+  }
+  active.visibleObjectGate = confirmation.gate;
+  active.confirmedSelectionIds = Int32Array.from(state.selection);
+  active.confirmedScanRevisionKey = revision.key;
+  active.confirmedScanPending = true;
+  active.scanRetry = null;
+  ui.confirmVisibleObject.disabled = true;
+  ui.visibleObjectGate.hidden = true;
+  setWorkspace('object');
+  ui.objectPreviewHud.dataset.promoting = 'true';
+  setTimeout(() => {
+    delete ui.objectPreviewHud.dataset.promoting;
+  }, 820);
+  ui.multiviewStatus.textContent =
+    `Rendering 1 / ${state.multiview.count} · queued from the confirmed Selection frame`;
+  scanTray.begin({
+    id: `pending:${revision.key}`,
+    total: state.multiview.count,
+    pending: true,
+  });
+  setWork({
+    key: `visible-object-confirmed-${revision.key}`,
+    state: 'busy',
+    title: `Rendering 1 / ${state.multiview.count}`,
+    detail: `${revision.selectionCount.toLocaleString()} confirmed splats · preparing the first real scan view`,
+    steps: ['confirm target', 'render views', 'track object', 'add to 3D'],
+    active: 1,
+  });
+  refreshMultiviewCapability();
+  scheduleAutomaticMultiview('Visible object confirmed', 0);
+}
+
+function selectionMatchesConfirmedSnapshot(active) {
+  const ids = active?.confirmedSelectionIds;
+  if (!ids || ids.length !== state.selection.size) return false;
+  for (const index of ids) {
+    if (!state.selection.has(index)) return false;
+  }
+  return true;
+}
+
+ui.confirmVisibleObject.addEventListener('click', acceptVisibleObjectConfirmation);
+ui.editVisibleObjectMask.addEventListener('click', () => setWorkspace('mask'));
 
 async function collectVisibleObjectGaussians(projection, objectSelection, session) {
   const bounds = new THREE.Box3();
@@ -6723,11 +8727,13 @@ ui.projectionCanvas.addEventListener('pointerdown', async (event) => {
   const point = projectionEventPoint(event);
   if (!point) return;
   stopMultiviewForSeedEdit();
+  invalidateVisibleObjectConfirmation(active);
 
   if (state.editMode === 'positive' || state.editMode === 'negative') {
     beginControlDiff('samPrompt');
     if (!active.sources.has('auto')) {
       active.sources = new Set(['auto']);
+      state.configuredSources = new Set(active.sources);
       setMethodUI(active.sources);
     }
     active.prompts.push({
@@ -6777,7 +8783,7 @@ ui.projectionPip.addEventListener('click', (event) => {
   if (!event.target.closest('#projectionEditorBack')) return;
   event.preventDefault();
   event.stopImmediatePropagation();
-  setProjectionEditorOpen(false);
+  setWorkspace(null, { returnPrevious: true });
 }, true);
 ui.projectionCanvas.addEventListener('dblclick', (event) => {
   if (!state.editMode.startsWith('polygon')) return;
@@ -6830,6 +8836,19 @@ function updateBrushCursor(event) {
   ui.brushCursor.style.left = `${event.clientX}px`;
   ui.brushCursor.style.top = `${event.clientY}px`;
   ui.brushCursor.style.display = 'block';
+}
+
+function cancelBorderStroke() {
+  if (!borderDrawing) return;
+  borderDrawing = false;
+  lastBorderPoint = null;
+  const active = state.active;
+  if (active?.strokeUndo) {
+    active.manualEdits = active.strokeUndo;
+    active.strokeUndo = null;
+  }
+  releaseControlDiff('border');
+  renderEditableProjection();
 }
 
 function finishBorderStroke(event) {
@@ -6885,7 +8904,6 @@ function finishBorderStroke(event) {
         steps: ['paint', 'lift', 'grow'],
         active: 3,
       });
-      scheduleAutomaticMultiview('2D mask edited');
     } catch (error) {
       if (error.name !== 'AbortError') {
         console.error(error);
@@ -6930,15 +8948,16 @@ addEventListener('keydown', (event) => {
     setBorderEditMode('add');
   } else if (event.code === 'KeyX' && state.editMode !== 'off') {
     setBorderEditMode(state.editMode === 'add' ? 'remove' : 'add');
-  } else if (event.code === 'Escape') {
-    event.preventDefault();
-    undoSelectionPreview();
   } else if (event.code === 'Enter') {
     keepSelectionPreview();
   }
 });
 
 document.getElementById('closeProps').addEventListener('click', () => {
+  if (!state.active) {
+    syncSelectionInspector();
+    return;
+  }
   ui.selectionProps.hidden = true;
   document.body.dataset.inspector = 'false';
 });
@@ -6971,6 +8990,7 @@ function keepSelectionPreview() {
   state.activeDockSegmentId = null;
   state.highlight?.clearGhost();
   dismissActiveSelection();
+  clearObjectPreviewBuffer();
   renderSelectionState();
   setWork({
     key: `selection-docked-${segment.id}`,
@@ -7066,8 +9086,7 @@ function undoSelectionPreview() {
   } else {
     ui.projectionMaskTools.hidden = true;
     ui.projectionEditorOpen.hidden = true;
-    ui.selectionProps.hidden = true;
-    document.body.dataset.inspector = 'false';
+    syncSelectionInspector();
     if (capture.width) {
       renderProjectionPreview({
         label: state.encoded ? `${capture.width} × ${capture.height}` : 'view changed · re-encoding',
@@ -7097,6 +9116,7 @@ document.getElementById('clear').addEventListener('click', () => {
   state.forcedProvisional.clear();
   state.recentlyAdded.clear();
   dismissActiveSelection();
+  clearObjectPreviewBuffer();
   renderSelectionState();
   setWork({
     key: 'selection-cleared',
@@ -7140,13 +9160,59 @@ window.__app = {
 document.querySelectorAll('[data-tip]').forEach((element) => {
   element.title = element.dataset.tip;
 });
+syncWorkspaceStack();
 
 // ------------------------------------------------------------ main loop ----
 
 let lastFrameAt = performance.now();
 let lastRenderedFrameAt = 0;
-let lastCockpitRenderedAt = 0;
 let controlsInteracting = false;
+let lastScenePostcardAt = -Infinity;
+const scenePostcardContext = document.getElementById('scenePostcardCanvas')
+  .getContext('2d', { alpha: false });
+
+function updateScenePostcard(now) {
+  if (workspaceController.active !== 'scene' || now - lastScenePostcardAt < 400) return;
+  const postcard = document.getElementById('scenePostcardCanvas');
+  const width = 256;
+  const height = 116;
+  if (postcard.width !== width || postcard.height !== height) {
+    postcard.width = width;
+    postcard.height = height;
+  }
+  try {
+    scenePostcardContext.drawImage(
+      renderer.domElement,
+      0,
+      0,
+      renderer.domElement.width,
+      renderer.domElement.height,
+      0,
+      0,
+      width,
+      height,
+    );
+    const revision = currentBufferPreviewRevision();
+    if (revision) {
+      bufferPreviewStore.publish({
+        bufferId: BUFFER_PREVIEW_IDS.SCENE,
+        revision,
+        status: state.exploration ? 'LIVE' : 'FROZEN',
+        counts: { frames: 1, selected: state.selection.size },
+        displayMode: state.exploration ? 'explore' : 'selection',
+        render: {
+          source: { kind: 'throttled-framebuffer-copy', width, height },
+          payload: postcard,
+          bytes: width * height * 4,
+        },
+      });
+    }
+    lastScenePostcardAt = now;
+  } catch (error) {
+    console.warn('[workspace] live Scene postcard copy skipped', error);
+    lastScenePostcardAt = now;
+  }
+}
 
 controls.addEventListener('start', () => {
   controlsInteracting = true;
@@ -7162,35 +9228,23 @@ renderer.setAnimationLoop(() => {
 
   updateWorkElapsed(now);
   updateMovement(dt);
-  const controlsChanged = controls.update();
+  const deferTargetControls = Boolean(
+    state.active?.sceneOrbitPivotSet
+      && !state.active.targetControlsActivated
+      && !state.multiview.session,
+  );
+  const controlsChanged = deferTargetControls ? false : controls.update();
 
-  // The old loop repainted the full Gaussian scene at display refresh rate
-  // even when neither camera nor scene changed. On hybrid laptops that can pin
-  // the Intel display GPU at 100%. Keep navigation at display speed, animate
-  // the hologram smoothly at 30 fps, and let a completely idle scene rest.
+  // preserveDrawingBuffer is deliberately false. Once the browser presents a
+  // WebGL frame its color contents are undefined, so an overlay-only animation
+  // tick can expose a discarded (usually black) buffer. Use one cadence for
+  // the cockpit and its overlays and repaint the complete visible transaction
+  // every time this callback issues drawing commands.
   const navigating = controlsInteracting
     || viewfinder.locked
     || controlsChanged
     || keys.size > 0;
   const frameInterval = document.hidden
-    ? 250
-    : navigating
-      ? 1000 / 60
-      : state.selection.size || state.busy || state.multiview.session
-        ? 1000 / 30
-        : 100;
-  if (now - lastRenderedFrameAt < frameInterval) return;
-  lastRenderedFrameAt = now;
-
-  updateEncodingRipple(now);
-  state.highlight?.animate(now);
-  segmentDock.animate(now);
-
-  // The hologram needs a smooth small overlay, but a static multi-million
-  // Gaussian cockpit does not need to be updated and redrawn at 30 fps merely
-  // because the backend is tracking. Render it on movement, on selection
-  // changes, or at a low resting cadence; the cutout has an independent sorter.
-  const cockpitInterval = document.hidden
     ? 500
     : navigating
       ? 1000 / 60
@@ -7201,18 +9255,53 @@ renderer.setAnimationLoop(() => {
           : state.selection.size
             ? 1000 / 15
             : 100;
+  if (now - lastRenderedFrameAt < frameInterval) return;
+  lastRenderedFrameAt = now;
+
+  updateEncodingRipple(now);
+  state.highlight?.animate(now);
+  segmentDock.animate(now);
+  positionVisibleObjectConfirmation();
+  positionTargetReplacementDecision();
+
   // Every animation tick that may draw HUD content starts from a canonical
   // visible-framebuffer state. Auxiliary passes restore their snapshots, but
   // this also self-heals immediately after a driver/context restoration quirk.
+  const visibleFrame = beginVisibleFrameTransaction(visibleRendererDiagnostics.frames + 1);
+  auditVisibleRendererState('frame-start');
   prepareVisibleRendererState();
-  if (now - lastCockpitRenderedAt >= cockpitInterval) {
-    lastCockpitRenderedAt = now;
-    // The source cloud is always the cockpit background. Docking/focus uses
-    // the per-Gaussian hidden mask; no workflow may hide the whole renderer.
+  if (workspaceController.active === 'scene') {
+    // Scene is rendered only while its persistent buffer is active. The last
+    // completed frame is copied into its live postcard before another
+    // workspace replaces the central framebuffer.
     if (state.splat) state.splat.object3D.visible = true;
     state.splat?.update(renderer, camera);
     renderer.render(scene, camera);
+    updateScenePostcard(now);
+  } else {
+    // 2D Mask and 3D Object replace the central Scene buffer. Their state is
+    // preserved independently; no hidden Scene frame is drawn underneath.
+    renderer.clear(true, true, true);
   }
-  objectPreview.render(now);
-  hudEffects.render(now);
+  markCockpitRendered(visibleFrame);
+  auditVisibleRendererState('cockpit-complete');
+  if (!state.exploration) {
+    if (hudEffectsPassEnabled) {
+      renderGuardedOverlay('hud-effects', hudEffects, now, visibleFrame);
+      if (!auditVisibleRendererState('hud-effects-complete')) {
+        hudEffectsPassEnabled = false;
+        visibleRendererDiagnostics.hudEffectsDisabled = true;
+      }
+    }
+    // The bounded Object preview is the final overlay. Its scissored clear and
+    // render occlude any Scene targeting HUD beneath the transparent card
+    // window, so YOLO guidance cannot bleed into the isolated 3D surface.
+    if (objectPreviewPassEnabled) {
+      renderGuardedOverlay('object-preview', objectPreviewLayer, now, visibleFrame);
+      if (!auditVisibleRendererState('object-preview-complete')) {
+        objectPreviewPassEnabled = false;
+        visibleRendererDiagnostics.objectPreviewDisabled = true;
+      }
+    }
+  }
 });

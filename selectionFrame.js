@@ -156,6 +156,92 @@ export function viewMatricesMatch(frozen, current, epsilon = 1e-5) {
   return true;
 }
 
+export function selectionAlignmentStatus({
+  frame,
+  viewRevision,
+  sceneRevision,
+  framebuffer,
+  viewport,
+  viewMatrix,
+  projectionMatrix,
+  crop,
+  mask,
+  overlay,
+} = {}) {
+  const preflight = selectionReturnPreflight({
+    frame,
+    viewRevision,
+    sceneRevision,
+    framebuffer,
+    viewport,
+    crop,
+    mask,
+    overlay,
+  });
+  if (!preflight.ok) return preflight;
+  if (!viewMatricesMatch(frame.camera.viewMatrix, viewMatrix)
+    || !viewMatricesMatch(frame.camera.projectionMatrix, projectionMatrix)) {
+    return failedAlignment('camera-matrix');
+  }
+  return Object.freeze({ ok: true, reason: null });
+}
+
+/**
+ * Validate every non-camera condition needed to restore a captured Selection
+ * view. Callers must run this before mutating camera pose, projection, or
+ * controls because none of these incompatibilities can be repaired by moving
+ * the camera.
+ */
+export function selectionReturnPreflight({
+  frame,
+  viewRevision,
+  sceneRevision,
+  framebuffer,
+  viewport,
+  crop,
+  mask,
+  overlay,
+} = {}) {
+  if (!frame) return failedAlignment('missing-frame');
+  if (!selectionFrameMatches(frame, {
+    viewRevision,
+    sceneRevision,
+    framebufferWidth: framebuffer?.width,
+    framebufferHeight: framebuffer?.height,
+  })) return failedAlignment('frame-revision-or-framebuffer');
+  if (frame.orientation !== 'top-left') return failedAlignment('orientation');
+  if (!rectMatches(frame.cssViewport, viewport)) return failedAlignment('css-viewport');
+  if (!cropMatches(frame.crop, crop)) return failedAlignment('capture-crop');
+  if (mask?.width !== frame.capture.width || mask?.height !== frame.capture.height) {
+    return failedAlignment('mask-capture-size');
+  }
+  if (overlay?.width !== mask.width || overlay?.height !== mask.height) {
+    return failedAlignment('overlay-backing-size');
+  }
+  if (!rectMatches(viewport, overlay?.clientRect)) {
+    return failedAlignment('overlay-css-transform');
+  }
+  return Object.freeze({ ok: true, reason: null });
+}
+
+function failedAlignment(reason) {
+  return Object.freeze({ ok: false, reason });
+}
+
+function rectMatches(left, right, epsilon = 0.5) {
+  if (!left || !right) return false;
+  return ['left', 'top', 'width', 'height'].every((key) =>
+    Math.abs(Number(left[key]) - Number(right[key])) <= epsilon);
+}
+
+function cropMatches(left, right, epsilon = 0.01) {
+  if (!left || !right) return false;
+  return Math.abs(left.x - right.x) <= epsilon
+    && Math.abs(left.y - right.y) <= epsilon
+    && Math.abs(left.width - (right.width ?? right.w)) <= epsilon
+    && Math.abs(left.height - (right.height ?? right.h)) <= epsilon;
+}
+
 function freezeMatrix(values, label) {
   if (!values || values.length !== 16) {
     throw new TypeError(`${label} must contain 16 values`);

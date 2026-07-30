@@ -3,6 +3,69 @@ import * as THREE from 'three';
 const MAX_PREVIEW_POINTS = 180_000;
 const MAX_CONTEXT_POINTS = 42_000;
 const MAX_CONTEXT_CELL_VISITS = 90_000;
+export const OBJECT_PREVIEW_FRAME_PADDING = 1.25;
+export const OBJECT_PREVIEW_SPIN_RATE = 0.00011;
+
+export function createObjectPreviewMotionState() {
+  return {
+    automaticYaw: 0,
+    userYaw: 0,
+    userPitch: 0.08,
+    lastFrameAt: null,
+    paused: false,
+    hoverOwners: new Set(),
+  };
+}
+
+export function advanceObjectPreviewSpin(
+  motion,
+  now,
+  {
+    enabled = true,
+    reducedMotion = false,
+    rate = OBJECT_PREVIEW_SPIN_RATE,
+  } = {},
+) {
+  const current = Number(now);
+  const previous = Number(motion.lastFrameAt);
+  motion.lastFrameAt = current;
+  if (!Number.isFinite(current) || !Number.isFinite(previous)
+    || !enabled || reducedMotion || motion.paused) {
+    return motion.automaticYaw;
+  }
+  const elapsed = Math.max(0, Math.min(100, current - previous));
+  motion.automaticYaw += elapsed * rate;
+  return motion.automaticYaw;
+}
+
+export function setObjectPreviewHover(motion, owner, hovered) {
+  if (hovered) motion.hoverOwners?.add(owner);
+  else motion.hoverOwners?.delete(owner);
+  motion.paused = (motion.hoverOwners?.size ?? Number(Boolean(hovered))) > 0;
+  return motion.paused;
+}
+
+export function objectPreviewFitDistance({
+  fovDegrees = 34,
+  aspect = 1,
+  radius = 1,
+  padding = OBJECT_PREVIEW_FRAME_PADDING,
+} = {}) {
+  const verticalFov = THREE.MathUtils.degToRad(Math.max(1, Number(fovDegrees) || 34));
+  const safeAspect = Math.max(0.05, Number(aspect) || 1);
+  const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * safeAspect);
+  const limitingHalfFov = Math.max(0.01, Math.min(verticalFov, horizontalFov) / 2);
+  return Math.max(1e-4, Number(radius) || 1)
+    * Math.max(1, Number(padding) || OBJECT_PREVIEW_FRAME_PADDING)
+    / Math.tan(limitingHalfFov);
+}
+
+export function outwardOnlyFit(previous, candidate) {
+  const next = Math.max(0, Number(candidate) || 0);
+  return Number.isFinite(previous) && previous > 0
+    ? Math.max(previous, next)
+    : next;
+}
 
 /**
  * A lightweight, isolated view of the selected splats rendered into a
@@ -17,6 +80,8 @@ export class ObjectPreview {
     onBrush = () => {},
     onBrushEnd = () => {},
     onSurfacePick = () => {},
+    trackHistory = true,
+    motionState = null,
   } = {}) {
     this.renderer = renderer;
     this.interactionElement = interactionElement;
@@ -26,6 +91,9 @@ export class ObjectPreview {
     this.onBrush = onBrush;
     this.onBrushEnd = onBrushEnd;
     this.onSurfacePick = onSurfacePick;
+    this.trackHistory = Boolean(trackHistory);
+    this.motion = motionState ?? createObjectPreviewMotionState();
+    this.motionOwner = Symbol('object-preview');
 
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(34, 1, 0.001, 1000);
@@ -131,8 +199,6 @@ export class ObjectPreview {
     this.spin = true;
     this.updating = false;
     this.hasData = false;
-    this.userYaw = 0;
-    this.userPitch = 0.08;
     this.fadeStartedAt = 0;
     this.evidencePulseStartedAt = -Infinity;
     this.periodicPulseOrigin = performance.now();
@@ -146,6 +212,9 @@ export class ObjectPreview {
     this._drag = null;
     this._brush = null;
     this.editMode = 'view';
+    this.presentation = 'card';
+    this.zoom = 1;
+    this.fitDistance = null;
     this.hovered = false;
     this._pickVector = new THREE.Vector3();
     this._pickMatrix = new THREE.Matrix4();
@@ -169,8 +238,8 @@ export class ObjectPreview {
         id: event.pointerId,
         x: event.clientX,
         y: event.clientY,
-        yaw: this.userYaw,
-        pitch: this.userPitch,
+        yaw: this.motion.userYaw,
+        pitch: this.motion.userPitch,
         moved: false,
       };
       interactionElement.setPointerCapture(event.pointerId);
@@ -193,8 +262,8 @@ export class ObjectPreview {
         event.clientX - this._drag.x,
         event.clientY - this._drag.y,
       ) > 3) this._drag.moved = true;
-      this.userYaw = this._drag.yaw + (event.clientX - this._drag.x) * 0.01;
-      this.userPitch = THREE.MathUtils.clamp(
+      this.motion.userYaw = this._drag.yaw + (event.clientX - this._drag.x) * 0.01;
+      this.motion.userPitch = THREE.MathUtils.clamp(
         this._drag.pitch + (event.clientY - this._drag.y) * 0.008,
         -0.8,
         0.8,
@@ -225,15 +294,45 @@ export class ObjectPreview {
           });
         }
       }
+      if (!interactionElement.matches(':hover')) this._setHovered(false);
     };
     interactionElement.addEventListener('pointerup', release);
     interactionElement.addEventListener('pointercancel', release);
     interactionElement.addEventListener('pointerenter', () => {
-      this.hovered = true;
+      this._setHovered(true);
     });
     interactionElement.addEventListener('pointerleave', () => {
-      if (!this._drag && !this._brush) this.hovered = false;
+      if (!this._drag && !this._brush) this._setHovered(false);
     });
+    interactionElement.addEventListener('wheel', (event) => {
+      if (!this.hasData || this.presentation !== 'main') return;
+      this.zoom = THREE.MathUtils.clamp(
+        this.zoom * Math.exp(event.deltaY * 0.001),
+        0.55,
+        2.4,
+      );
+      this.camera.position.z = (this.fitDistance ?? 2.38) * this.zoom;
+      this.camera.lookAt(0, 0, 0);
+      this.camera.updateMatrixWorld(true);
+      event.preventDefault();
+    }, { passive: false });
+  }
+
+  cancelInteraction() {
+    const active = this._brush ?? this._drag;
+    if (!active) return false;
+    const wasBrush = Boolean(this._brush);
+    this._brush = null;
+    this._drag = null;
+    if (this.interactionElement.hasPointerCapture(active.id)) {
+      this.interactionElement.releasePointerCapture(active.id);
+    }
+    if (wasBrush) this.onBrushEnd();
+    return true;
+  }
+
+  get interacting() {
+    return Boolean(this._brush || this._drag);
   }
 
   _makeLayer(color, opacity, { context = false } = {}) {
@@ -310,6 +409,15 @@ export class ObjectPreview {
     this.spin = Boolean(spin);
   }
 
+  _setHovered(hovered) {
+    this.hovered = Boolean(hovered);
+    setObjectPreviewHover(this.motion, this.motionOwner, this.hovered);
+  }
+
+  releaseHover() {
+    this._setHovered(false);
+  }
+
   setUpdating(updating) {
     this.updating = Boolean(updating);
   }
@@ -320,9 +428,16 @@ export class ObjectPreview {
       this.editMode === 'cleanup' ? 'cleanup' : 'view';
   }
 
+  setPresentation(presentation = 'card') {
+    this.presentation = presentation === 'main' ? 'main' : 'card';
+    this.interactionElement.dataset.presentation = this.presentation;
+  }
+
   resetView() {
-    this.userYaw = 0;
-    this.userPitch = 0.08;
+    this.motion.userYaw = 0;
+    this.motion.userPitch = 0.08;
+    this.motion.automaticYaw = 0;
+    this.motion.lastFrameAt = null;
   }
 
   setAppearance({ opacity = this.opacity, boundarySoftness = 20 } = {}) {
@@ -359,10 +474,10 @@ export class ObjectPreview {
   }) {
     this.updating = false;
     this.setAppearance({ opacity, boundarySoftness });
-    if (viewMatrix?.length === 16) {
+    if (!this.hasData && viewMatrix?.length === 16) {
       this.viewRotationMatrix.fromArray(viewMatrix);
       this.baseQuaternion.setFromRotationMatrix(this.viewRotationMatrix);
-    } else {
+    } else if (!this.hasData) {
       this.baseQuaternion.identity();
     }
     if (!centers || !selection?.size) {
@@ -396,7 +511,7 @@ export class ObjectPreview {
     this.selectionCentre = centre.clone();
     this.cutawayHalfSize = cubeHalfSize;
     const removedIndices = [];
-    if (this.previousSelection) {
+    if (this.trackHistory && this.previousSelection) {
       for (const index of this.previousSelection) {
         if (!selection.has(index)) removedIndices.push(index);
       }
@@ -494,7 +609,7 @@ export class ObjectPreview {
     this.contextCube.position.set(0, 0, 0);
     this.camera.near = 0.01;
     this.camera.far = 20;
-    this.camera.position.set(0, 0.05, 2.38);
+    this.camera.position.set(0, 0.05, (this.fitDistance ?? 2.38) * this.zoom);
     this.camera.lookAt(0, 0, 0);
     this.camera.updateProjectionMatrix();
     const now = performance.now();
@@ -505,7 +620,7 @@ export class ObjectPreview {
     this.fadeStartedAt = now;
     if (selectionChanged) this.evidencePulseStartedAt = now;
     if (stats.new) this.addedStartedAt = now;
-    this.previousSelection = new Set(selection);
+    this.previousSelection = this.trackHistory ? new Set(selection) : null;
     this.stats = stats;
     this.onStats(stats);
   }
@@ -649,14 +764,24 @@ export class ObjectPreview {
 
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
-    // A single-view selection has no verified back side yet. Rock around the
-    // captured view instead of implying complete 360° evidence.
-    const automaticYaw = this.spin && !this.hovered
-      ? Math.sin(now * 0.00034) * 0.42
-      : 0;
+    const candidateFit = objectPreviewFitDistance({
+      fovDegrees: this.camera.fov,
+      aspect: this.camera.aspect,
+    });
+    const nextFit = outwardOnlyFit(this.fitDistance, candidateFit);
+    if (nextFit !== this.fitDistance) {
+      this.fitDistance = nextFit;
+      this.camera.position.z = this.fitDistance * this.zoom;
+      this.camera.lookAt(0, 0, 0);
+      this.camera.updateMatrixWorld(true);
+    }
+    const automaticYaw = advanceObjectPreviewSpin(this.motion, now, {
+      enabled: this.spin,
+      reducedMotion: this.reducedMotion,
+    });
     this.interactionEuler.set(
-      this.userPitch,
-      this.userYaw + automaticYaw,
+      this.motion.userPitch,
+      this.motion.userYaw + automaticYaw,
       0,
     );
     this.interactionQuaternion.setFromEuler(this.interactionEuler);
@@ -683,10 +808,10 @@ export class ObjectPreview {
         this.onStats(this.stats);
       }
     }
-    const scanPeriod = this.updating ? 1900 : 4600;
-    const scanDuration = this.updating ? 1500 : 820;
+    const scanPeriod = 1900;
+    const scanDuration = 1500;
     const scanCycle = (now - this.fadeStartedAt) % scanPeriod;
-    if (!this.reducedMotion && scanCycle < scanDuration) {
+    if (this.updating && !this.reducedMotion && scanCycle < scanDuration) {
       const scanProgress = scanCycle / scanDuration;
       this.scanRing.position.y = THREE.MathUtils.lerp(-0.58, 0.62, scanProgress);
       this.scanRing.scale.setScalar(0.72 + Math.sin(scanProgress * Math.PI) * 0.16);
@@ -695,17 +820,13 @@ export class ObjectPreview {
     } else {
       this.scanRing.material.opacity = 0;
     }
-    const periodicCycle = (now - this.periodicPulseOrigin) % 4200;
-    const periodicPulse = periodicCycle < 760
-      ? Math.sin(periodicCycle / 760 * Math.PI)
-      : 0;
     const changeAge = now - this.evidencePulseStartedAt;
     const changePulse = changeAge >= 0 && changeAge < 920
       ? Math.sin(changeAge / 920 * Math.PI)
       : 0;
     const evidencePulse = this.reducedMotion
       ? 0
-      : Math.max(periodicPulse * 0.78, changePulse);
+      : changePulse;
     for (const name of ['confirmed', 'provisional', 'locked']) {
       this.layers[name].material.uniforms.uEvidence.value = evidencePulse;
     }
@@ -725,10 +846,13 @@ export class ObjectPreview {
 
     const x = target.left - canvas.left;
     const y = canvas.bottom - target.bottom;
-    const clippedLeft = Math.max(target.left, canvas.left);
-    const clippedRight = Math.min(target.right, canvas.right);
-    const clippedTop = Math.max(target.top, canvas.top);
-    const clippedBottom = Math.min(target.bottom, canvas.bottom);
+    const clipElement = this.interactionElement.closest('.buffer-card-viewport')
+      ?? this.interactionElement.closest('#objectPreviewViewport');
+    const clip = clipElement?.getBoundingClientRect?.() ?? target;
+    const clippedLeft = Math.max(target.left, clip.left, canvas.left);
+    const clippedRight = Math.min(target.right, clip.right, canvas.right);
+    const clippedTop = Math.max(target.top, clip.top, canvas.top);
+    const clippedBottom = Math.min(target.bottom, clip.bottom, canvas.bottom);
     const scissorX = clippedLeft - canvas.left;
     const scissorY = canvas.bottom - clippedBottom;
     const scissorWidth = clippedRight - clippedLeft;
@@ -741,7 +865,11 @@ export class ObjectPreview {
       this.renderer.setViewport(x, y, width, height);
       this.renderer.setScissor(scissorX, scissorY, scissorWidth, scissorHeight);
       this.renderer.setScissorTest(true);
-      this.renderer.clearDepth();
+      // Every Object buffer owns a quiet dark field. Clearing the exact
+      // scissor prevents the live Scene from showing through both the compact
+      // postcard and the promoted main workspace.
+      this.renderer.setClearColor(0x05090c, 1);
+      this.renderer.clear(true, true, true);
       this.renderer.render(this.scene, this.camera);
     } finally {
       rendererState.restore();

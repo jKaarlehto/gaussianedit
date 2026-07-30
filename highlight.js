@@ -67,6 +67,7 @@ export class Highlight {
       opacity,
       size: 2.5,
       count: 0,
+      baseColor: new THREE.Color(color),
     };
   }
 
@@ -224,6 +225,25 @@ export class Highlight {
   setPointSize(size) {
     for (const layer of Object.values(this.layers)) {
       this._setAppearance(layer, layer.opacity, size);
+    }
+  }
+
+  setContextAppearance(enabled = false) {
+    const contextColor = new THREE.Color(0x83a8ad);
+    for (const [name, layer] of Object.entries(this.layers)) {
+      if (name === 'ghost') continue;
+      const color = enabled ? contextColor : layer.baseColor;
+      if (layer.material.isShaderMaterial) {
+        layer.material.uniforms.uColor.value.copy(color);
+        layer.material.uniforms.uOpacity.value = enabled
+          ? Math.min(0.16, layer.opacity * 0.2)
+          : layer.opacity;
+      } else {
+        layer.material.color.copy(color);
+        layer.material.opacity = enabled
+          ? Math.min(0.16, layer.opacity * 0.2)
+          : layer.opacity;
+      }
     }
   }
 

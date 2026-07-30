@@ -56,7 +56,7 @@ export class ScanTray {
     this.particleLayer = findOrCreateParticleLayer();
   }
 
-  begin({ id, total }) {
+  begin({ id, total, pending = false }) {
     this._clearTimers();
     this.generation++;
     this.sessionId = id;
@@ -72,7 +72,8 @@ export class ScanTray {
     this.root.hidden = false;
     this._setState('rendering');
     this.root.dataset.stage = 'views';
-    this._setStatus('Generating views', 0);
+    if (pending) this._writeStatus(`Rendering 1 / ${this.total} · queued`);
+    else this._setStatus('Generating views', 0);
   }
 
   rendered({ id, label, canvas }) {

@@ -370,6 +370,10 @@ export class SplatSource {
 
     const viewer = new GS.DropInViewer({
       gpuAcceleratedSort: false,
+      // The scan renderer is sized in exact target pixels with pixelRatio=1.
+      // Matching the Viewer DPR prevents its focal/viewport uniforms from
+      // silently re-applying the display's devicePixelRatio.
+      ignoreDevicePixelRatio: true,
       sharedMemoryForWorkers: crossOriginIsolated,
     });
     useExplicitViewerUpdates(viewer);
@@ -398,6 +402,21 @@ export class SplatSource {
         const sort = inner.runSplatSort?.(true, true);
         if (sort?.then) await sort;
         inner.update(renderer, camera);
+      },
+      getRenderDiagnostics() {
+        const mesh = inner.splatMesh;
+        const viewport = mesh?.material?.uniforms?.viewport?.value;
+        const focal = mesh?.material?.uniforms?.focal?.value;
+        return Object.freeze({
+          splatCount: mesh?.getSplatCount?.() ?? 0,
+          splatRenderCount: inner.splatRenderCount ?? 0,
+          splatSortCount: inner.splatSortCount ?? 0,
+          renderReady: inner.splatRenderReady ?? false,
+          sortRunning: inner.sortRunning ?? false,
+          viewport: viewport ? [viewport.x, viewport.y] : null,
+          focal: focal ? [focal.x, focal.y] : null,
+          devicePixelRatio: inner.devicePixelRatio ?? null,
+        });
       },
       dispose() {
         return inner.dispose?.();

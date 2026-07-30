@@ -68,6 +68,11 @@ function randomDemoPly() {
     name: 'random-downloads-ply',
     configureServer(server) {
       const downloads = join(homedir(), 'Downloads');
+      const developmentDefault = join(
+        downloads,
+        'blender livingroom',
+        'scene.ply',
+      );
       const productDefault = join(
         downloads,
         'Nelson Ghost Town, Water Tower, Las Vegas NV (XGRIDS PortalCam)',
@@ -76,6 +81,7 @@ function randomDemoPly() {
       const files = readdirSync(downloads, { withFileTypes: true })
         .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.ply'))
         .map((entry) => join(downloads, entry.name));
+      if (existsSync(developmentDefault)) files.unshift(developmentDefault);
       if (existsSync(productDefault)) files.unshift(productDefault);
       filesByName = new Map(files.map((file) => [
         file.split(/[\\/]/).pop().toLowerCase(),
@@ -84,10 +90,18 @@ function randomDemoPly() {
       const configuredDemo = process.env.GAUSSIANEDIT_DEMO_PLY?.trim();
       selected = configuredDemo && existsSync(configuredDemo)
         ? configuredDemo
-        : existsSync(productDefault)
-          ? productDefault
-          : files.find((file) => file.toLowerCase().endsWith('gaussianedit_demo_scene.ply'))
-            ?? (files.length ? files[Math.floor(Math.random() * files.length)] : null);
+        : existsSync(developmentDefault)
+          ? developmentDefault
+          : existsSync(productDefault)
+            ? productDefault
+            : files.find((file) => file.toLowerCase().endsWith('gaussianedit_demo_scene.ply'))
+              ?? (files.length ? files[Math.floor(Math.random() * files.length)] : null);
+      if (!existsSync(developmentDefault)) {
+        console.warn(
+          `[demo] development default is missing: ${developmentDefault}; `
+          + 'falling back to another Downloads .ply or drag-and-drop',
+        );
+      }
       if (selected) console.log(`[demo] auto-loading ${selected}`);
       else console.log(`[demo] no .ply files found in ${downloads}`);
 

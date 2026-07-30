@@ -20,14 +20,19 @@ physical metaphor.
 4. **Scan** — pointing at or clicking a target sends an alien-style scan ray
    through it. SAM, classic region methods, depth, and other providers combine
    behind this one understandable action.
-5. **Inspect evidence** — the object resolves as a floating hologram. Confident,
+5. **Inspect evidence** — the visible result opens as a 2D mask, then the user
+   promotes its actual Gaussians into the 3D Object workspace. Confident,
    uncertain, newly discovered, locked, and removed regions have distinct but
    tasteful visual behavior. Every adjustment shows its exact difference.
-6. **Extract** — confirmation triggers a short shrink/tractor-beam sequence. The
-   selected Gaussians leave the world instead of remaining highlighted in place.
-7. **Store as cargo** — the object settles into the ship's bottom dock as a live
+6. **Scan all sides** — `Use this object` confirms the current visible 3D
+   selection and starts tracked hidden-side work while the 3D Object workspace
+   remains active.
+7. **Extract** — `Dock object` triggers a short shrink/tractor-beam sequence.
+   The selected Gaussians leave the world instead of remaining highlighted in
+   place.
+8. **Store as cargo** — the object settles into the ship's bottom dock as a live
    miniature. The dock owns the extracted splats.
-8. **Inspect or return** — selecting cargo opens its hologram and shows a subtle
+9. **Inspect or return** — selecting cargo opens its hologram and shows a subtle
    origin ghost. Dragging it back to that ghost restores the exact object.
 
 ## UX rules
@@ -46,7 +51,7 @@ physical metaphor.
 - Use one coherent visual language across 2D masks, 3D splats, holograms, the
   object dock, and multiview refinement.
 - Advanced controls should unfold only when requested. A normal interaction is
-  still: point at an object, scan it, confirm it.
+  still: point at an object, check its 2D mask and 3D form, use it, then dock it.
 - Failure states should offer a comprehensible alternative, such as manual edge
   editing or color fill, rather than exposing a model error as the main UX.
 

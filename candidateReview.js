@@ -24,11 +24,13 @@ export function reviewReleaseForNotice(loadedRelease, displayedRelease, isUpdate
 }
 
 export function classifyReviewState(state) {
-  const ok = Boolean(state?.ok);
-  const commented = Boolean(String(state?.comment ?? '').trim());
-  if (ok && commented) return { key: 'ok-commented', label: 'OK · commented' };
-  if (ok) return { key: 'ok', label: 'OK' };
-  if (commented) return { key: 'commented', label: 'Commented' };
+  const explicit = String(state?.status ?? '').toLowerCase();
+  if (explicit === 'ok') return { key: 'ok', label: 'OK' };
+  if (explicit === 'issue') return { key: 'issue', label: 'Issue' };
+  if (explicit === 'pending') return { key: 'pending', label: 'Pending' };
+  // Preserve v1 checkbox decisions without treating a free-form note as a
+  // second status or trying to infer whether its wording is positive/negative.
+  if (state?.ok === true) return { key: 'ok', label: 'OK' };
   return { key: 'pending', label: 'Pending' };
 }
 
@@ -39,7 +41,8 @@ export function formatReviewReport(release, states = new Map()) {
     const state = states.get(item.id) ?? {};
     const status = classifyReviewState(state).label.toUpperCase();
     const comment = String(state.comment ?? '').trim();
-    lines.push(`- ${status} · ${item.label}${comment ? ` — ${comment}` : ''}`);
+    lines.push(`- ${status} · ${item.label}`);
+    if (comment) lines.push(`  Note: ${comment}`);
   }
   return lines.join('\n');
 }
@@ -68,11 +71,11 @@ export function createCandidateReviewInbox({
     try {
       const parsed = JSON.parse(storage?.getItem(reviewStorageKey(releaseId, itemId)) || 'null');
       return {
-        ok: Boolean(parsed?.ok),
+        status: classifyReviewState(parsed).key,
         comment: String(parsed?.comment ?? '').slice(0, COMMENT_LIMIT),
       };
     } catch {
-      return { ok: false, comment: '' };
+      return { status: 'pending', comment: '' };
     }
   }
 
@@ -90,9 +93,11 @@ export function createCandidateReviewInbox({
 
   function updateSummary(summary) {
     const values = [...states.values()];
-    const ok = values.filter((state) => state.ok).length;
-    const commented = values.filter((state) => String(state.comment).trim()).length;
-    summary.textContent = `${ok}/${currentItems.length} OK · ${commented} commented`;
+    const counts = { pending: 0, ok: 0, issue: 0 };
+    for (const state of values) counts[classifyReviewState(state).key]++;
+    const notes = values.filter((state) => String(state.comment).trim()).length;
+    summary.textContent =
+      `${counts.ok} OK · ${counts.issue} issue · ${counts.pending} pending · ${notes} notes`;
   }
 
   function render(release) {
@@ -122,46 +127,48 @@ export function createCandidateReviewInbox({
       row.className = 'candidate-review-item';
       row.dataset.itemId = item.id;
 
-      const checkLabel = documentRef.createElement('label');
-      const checkbox = documentRef.createElement('input');
-      checkbox.type = 'checkbox';
-      checkbox.checked = state.ok;
-      checkbox.setAttribute('aria-label', `Mark ${item.label} OK`);
-      const okText = documentRef.createElement('span');
-      okText.textContent = 'OK';
       const itemLabel = documentRef.createElement('b');
       itemLabel.textContent = item.label;
-      checkLabel.append(checkbox, okText, itemLabel);
+
+      const decision = documentRef.createElement('select');
+      decision.className = 'candidate-review-decision';
+      decision.setAttribute('aria-label', `Acceptance state for ${item.label}`);
+      for (const [value, label] of [
+        ['pending', 'PENDING'],
+        ['ok', 'OK'],
+        ['issue', 'ISSUE'],
+      ]) {
+        const option = documentRef.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        decision.append(option);
+      }
+      decision.value = state.status;
 
       const comment = documentRef.createElement('input');
       comment.type = 'text';
       comment.className = 'candidate-review-comment';
       comment.maxLength = COMMENT_LIMIT;
-      comment.placeholder = 'Short comment';
+      comment.placeholder = 'Optional note';
       comment.value = state.comment;
-      comment.setAttribute('aria-label', `Comment on ${item.label}`);
-
-      const status = documentRef.createElement('span');
-      status.className = 'candidate-review-state';
+      comment.setAttribute('aria-label', `Note for ${item.label}`);
 
       const refresh = () => {
         const next = {
-          ok: checkbox.checked,
+          status: classifyReviewState({ status: decision.value }).key,
           comment: comment.value.slice(0, COMMENT_LIMIT),
         };
         const classification = classifyReviewState(next);
         row.dataset.state = classification.key;
-        status.textContent = classification.label;
         saveState(item.id, next);
         updateSummary(summary);
       };
-      checkbox.addEventListener('change', refresh);
+      decision.addEventListener('change', refresh);
       comment.addEventListener('input', refresh);
-      row.append(checkLabel, comment, status);
+      row.append(itemLabel, decision, comment);
       root.append(row);
       const classification = classifyReviewState(state);
       row.dataset.state = classification.key;
-      status.textContent = classification.label;
     }
 
     const actions = documentRef.createElement('div');
@@ -244,26 +251,27 @@ function ensureStyles(documentRef) {
     .candidate-review-heading { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
     .candidate-review-heading b { color: #a9f6ff; text-transform: uppercase; letter-spacing: .06em; }
     .candidate-review-heading span { color: #71808c; }
-    .candidate-review-item { display: grid; grid-template-columns: minmax(0, 1fr) 150px auto; gap: 6px; align-items: start; padding: 4px 0; }
-    .candidate-review-item label { justify-content: flex-start; align-items: flex-start; min-width: 0; margin: 0; }
-    .candidate-review-item label b {
+    .candidate-review-item { display: grid; grid-template-columns: minmax(0, 1fr) 76px 150px; gap: 6px; align-items: start; padding: 4px 0; }
+    .candidate-review-item > b {
       color: #aeb8c1; font-weight: 400; line-height: 1.35;
       overflow-wrap: anywhere; text-overflow: clip; white-space: normal;
     }
-    .candidate-review-item input[type="checkbox"] { accent-color: #70d7ff; }
+    .candidate-review-decision {
+      box-sizing: border-box; width: 100%; min-width: 0; padding: 3px 4px;
+      border: 1px solid var(--line); background: rgba(0, 0, 0, .18); color: #66737e;
+      font: 8px var(--mono);
+    }
+    .candidate-review-item[data-state="ok"] .candidate-review-decision { color: var(--ok); }
+    .candidate-review-item[data-state="issue"] .candidate-review-decision { color: #ef6b73; }
     .candidate-review-comment, .candidate-review-actions textarea {
       box-sizing: border-box; width: 100%; min-width: 0; padding: 3px 5px;
       border: 1px solid var(--line); background: rgba(0, 0, 0, .18); color: var(--ink);
       font: 8px var(--mono);
     }
-    .candidate-review-state { min-width: 66px; color: #66737e; text-align: right; }
-    .candidate-review-item[data-state="ok"] .candidate-review-state,
-    .candidate-review-item[data-state="ok-commented"] .candidate-review-state { color: var(--ok); }
-    .candidate-review-item[data-state="commented"] .candidate-review-state { color: #efc45d; }
     .candidate-review-actions { display: flex; justify-content: flex-end; margin-top: 6px; }
     .candidate-review-actions textarea { min-height: 52px; margin-left: 6px; resize: vertical; }
     @media (max-width: 760px) {
-      .candidate-review-item { grid-template-columns: 1fr auto; }
+      .candidate-review-item { grid-template-columns: 1fr 76px; }
       .candidate-review-comment { grid-column: 1 / -1; }
     }
   `;

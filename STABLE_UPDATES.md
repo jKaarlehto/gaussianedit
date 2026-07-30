@@ -16,9 +16,9 @@ replacing the running app. The banner asks the user to reload so code and build
 notes always refer to the same loaded version. Collapsing the banner leaves a
 small build chip at the top of the screen.
 
-## Current candidate — 2026.07.30-rc2
+## Current candidate — 2026.07.30-rc3
 
-- The cockpit stays visible without black blinks while selecting and capturing all sides.
-- The scan tray shows each real RGB view and exact mask, overlaps them, flashes twice, then transfers into the hologram.
-- The 2D mask postcard docks on the left, and Edit starting mask opens a usable mask editor.
-- Ambiguous angles offer Keep, Skip, and Edit; candidate checks and comments persist in the update banner.
+- The selected mask and highlight stay aligned; orbit hides the 2D raster, and Return to captured view restores the exact pose without a jump.
+- TARGET stays animated with current-frame YOLO hover and target-centered orbit and zoom; pan and flight stay blocked, with no YOLO in Mask or 3D Object.
+- The wider 3D card has no edge slivers; hover freezes its exact orientation, then unhover or promotion resumes the same phase.
+- Retargeting highlights the candidate first, then shows one compact SWITCH TARGET? Replace/Cancel choice without overlapping acquired and new-target HUDs.

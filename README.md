@@ -143,14 +143,15 @@ npm run dev
 
 Then drag a `.ply` / `.splat` / `.ksplat` onto the page, or uncomment the `loadSplat()` call in `main.js` and point it at your own asset. `.ksplat` loads fastest — convert with the tooling in `@mkkellogg/gaussian-splats-3d`.
 
-Controls: click adds an automatic region and opens its properties;
-`Shift`+click subtracts. In Auto mode, `Ctrl`/`Cmd`+click adds a positive
-refinement prompt and `Alt`+click adds a negative prompt. Tight is the smallest
-SAM mask, Suggested is the model's highest predicted-quality mask, and Broad is
-the largest. Auto object, Color fill, and Radius can be enabled together and
-combined by consensus, union, or intersection. The live border can be painted
-with Add/Remove brushes before the shared 3D completion stage runs. Fill and
-Radius remain deterministic fallbacks when model semantics are unhelpful.
+Controls: click starts one automatic object draft and opens its properties.
+Scene Shift-click is not a supported additive-selection operation. Correct the
+object through Keep/Exclude points or Add/Remove brushes in the 2D mask editor;
+starting another object requires explicitly clearing or abandoning the current
+draft. Tight is the smallest SAM mask, Suggested is the model's highest
+predicted-quality mask, and Broad is the largest. Auto object, Color fill, and
+Radius can be enabled together by Shift-clicking their targeting-method buttons,
+then combined by consensus, union, or intersection. Fill and Radius remain
+deterministic fallbacks when model semantics are unhelpful.
 For camera navigation, `W`/`S` move forward/back, `A`/`D` strafe,
 `Q`/`E` change heading, `Ctrl`/`Space` move down/up, and `Shift` sprints.
 

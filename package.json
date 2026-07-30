@@ -15,6 +15,7 @@
     "test:scan-coordinator": "node scripts/test-scan-coordinator.mjs",
     "test:selection-frame": "node scripts/test-selection-frame.mjs",
     "test:scan-tray": "node scripts/test-scan-tray.mjs",
+    "test:candidate-review": "node scripts/test-candidate-review.mjs",
     "build": "vite build",
     "preview": "vite preview"
   },

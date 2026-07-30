@@ -1,6 +1,67 @@
 import * as THREE from 'three';
 
 const MAX_ANALYSIS_POINTS = 60_000;
+const MIN_SYNTHETIC_NEAR = 1e-6;
+
+/**
+ * Fit clipping planes to the bounded object/cutout rather than inheriting the
+ * cockpit's world-scale planes. This keeps tiny selections in front of near
+ * while retaining the local context used for temporal tracking.
+ */
+export function deriveSyntheticClipPlanes({
+  cameraDistance,
+  objectRadius,
+  contextRadius = objectRadius * 4,
+}) {
+  const radius = Math.max(Math.abs(objectRadius) || 0, MIN_SYNTHETIC_NEAR);
+  const distance = Math.max(Math.abs(cameraDistance) || 0, radius);
+  const boundedContextRadius = Math.max(
+    Math.abs(contextRadius) || 0,
+    radius,
+  );
+  const nearestObject = Math.max(MIN_SYNTHETIC_NEAR, distance - radius);
+  const nearestContext = distance - boundedContextRadius;
+  const near = Math.max(
+    MIN_SYNTHETIC_NEAR,
+    Math.min(
+      radius * 0.02,
+      nearestObject * 0.25,
+      nearestContext > 0 ? nearestContext * 0.5 : radius * 0.02,
+    ),
+  );
+  const far = Math.max(
+    near * 16,
+    distance + boundedContextRadius * 1.15,
+  );
+  return Object.freeze({ near, far, distance, radius, contextRadius: boundedContextRadius });
+}
+
+export function inspectSyntheticClipPlanes({
+  cameraDistance,
+  objectRadius,
+  near,
+  far,
+}) {
+  const radius = Math.max(Math.abs(objectRadius) || 0, MIN_SYNTHETIC_NEAR);
+  const distance = Math.max(Math.abs(cameraDistance) || 0, radius);
+  const nearestObject = Math.max(MIN_SYNTHETIC_NEAR, distance - radius);
+  const farthestObject = distance + radius;
+  const valid = Number.isFinite(near)
+    && Number.isFinite(far)
+    && near > 0
+    && far > near
+    && near <= nearestObject
+    && far > farthestObject;
+  return Object.freeze({
+    valid,
+    near,
+    far,
+    distance,
+    objectRadius: radius,
+    nearestObject,
+    farthestObject,
+  });
+}
 
 /**
  * Describe the selected Gaussian region without letting a few floaters define
@@ -141,6 +202,10 @@ export function generateSyntheticOrbitViews({
     Math.max(fitDistance, analysis.radius * 2.05),
     sourceDistance * 1.08,
   );
+  const contextRadius = Math.max(
+    analysis.radius * 4,
+    analysis.robustMin.distanceTo(analysis.robustMax) * 0.75,
+  );
   const views = [];
   const trackingViews = [];
   const sourceQuaternion = camera.getWorldQuaternion(new THREE.Quaternion());
@@ -148,11 +213,16 @@ export function generateSyntheticOrbitViews({
     analysis.viewDirection,
     distance,
   );
+  const entryClip = deriveSyntheticClipPlanes({
+    cameraDistance: distance,
+    objectRadius: analysis.radius,
+    contextRadius,
+  });
   const entryCamera = new THREE.PerspectiveCamera(
     camera.fov,
     width / height,
-    camera.near,
-    camera.far,
+    entryClip.near,
+    entryClip.far,
   );
   entryCamera.position.copy(entryPosition);
   entryCamera.up.copy(analysis.worldUp);
@@ -196,12 +266,17 @@ export function generateSyntheticOrbitViews({
     }
     direction.normalize();
     const position = analysis.centre.clone().addScaledVector(direction, distance);
+    const clip = deriveSyntheticClipPlanes({
+      cameraDistance: distance,
+      objectRadius: analysis.radius,
+      contextRadius,
+    });
 
     const orbitCamera = new THREE.PerspectiveCamera(
       camera.fov,
       width / height,
-      camera.near,
-      camera.far,
+      clip.near,
+      clip.far,
     );
     orbitCamera.position.copy(position);
     orbitCamera.up.copy(analysis.worldUp);
@@ -221,8 +296,10 @@ export function generateSyntheticOrbitViews({
       width,
       height,
       fov: camera.fov,
-      near: camera.near,
-      far: camera.far,
+      near: clip.near,
+      far: clip.far,
+      objectRadius: analysis.radius,
+      contextRadius,
       target: analysis.centre.toArray(),
       expectedNovelty: THREE.MathUtils.clamp(
         Math.abs(yawDegrees) / effectiveMaxYaw * 0.82
@@ -248,11 +325,19 @@ export function generateSyntheticOrbitViews({
       const transitionCamera = new THREE.PerspectiveCamera(
         camera.fov,
         width / height,
-        camera.near,
-        camera.far,
+        entryClip.near,
+        entryClip.far,
       );
       transitionCamera.position.copy(sourcePosition).lerp(entryPosition, progress);
       transitionCamera.quaternion.copy(sourceQuaternion).slerp(entryQuaternion, progress);
+      const transitionDistance = transitionCamera.position.distanceTo(analysis.centre);
+      const transitionClip = deriveSyntheticClipPlanes({
+        cameraDistance: transitionDistance,
+        objectRadius: analysis.radius,
+        contextRadius,
+      });
+      transitionCamera.near = transitionClip.near;
+      transitionCamera.far = transitionClip.far;
       transitionCamera.updateProjectionMatrix();
       transitionCamera.updateMatrixWorld(true);
       trackingOrder++;
@@ -269,8 +354,10 @@ export function generateSyntheticOrbitViews({
         width,
         height,
         fov: camera.fov,
-        near: camera.near,
-        far: camera.far,
+        near: transitionClip.near,
+        far: transitionClip.far,
+        objectRadius: analysis.radius,
+        contextRadius,
         target: analysis.centre.toArray(),
         expectedNovelty: progress * 0.08,
       });

@@ -114,11 +114,17 @@ assert.deepEqual(normalizeReviewItems(release.reviewItems), [
 assert.deepEqual(classifyReviewState({}), { key: 'pending', label: 'Pending' });
 assert.deepEqual(
   classifyReviewState({ comment: 'Mask began late' }),
-  { key: 'commented', label: 'Commented' },
+  { key: 'pending', label: 'Pending' },
 );
 assert.deepEqual(
   classifyReviewState({ ok: true, comment: 'Looks good' }),
-  { key: 'ok-commented', label: 'OK · commented' },
+  { key: 'ok', label: 'OK' },
+);
+assert.deepEqual(classifyReviewState({ status: 'issue' }), { key: 'issue', label: 'Issue' });
+assert.deepEqual(
+  classifyReviewState({ status: 'pending', ok: true }),
+  { key: 'pending', label: 'Pending' },
+  'an explicit acceptance state takes precedence over the legacy checkbox',
 );
 
 const documentRef = new FakeDocument();
@@ -153,31 +159,60 @@ assert.equal(root.children.length, 4, 'heading, two items, and actions are rende
 const firstRow = root.children[1];
 const secondRow = root.children[2];
 assert.equal(firstRow.dataset.state, 'pending');
-assert.equal(firstRow.children[2].textContent, 'Pending');
+assert.equal(firstRow.children[1].value, 'pending');
 assert.equal(secondRow.dataset.state, 'pending');
 
-const firstCheckbox = firstRow.children[0].children[0];
-const firstComment = firstRow.children[1];
-firstCheckbox.checked = true;
-firstCheckbox.dispatch('change');
+const firstDecision = firstRow.children[1];
+const firstComment = firstRow.children[2];
+firstDecision.value = 'ok';
+firstDecision.dispatch('change');
 firstComment.value = '  Exact colors and camera angle match.  ';
 firstComment.dispatch('input');
-assert.equal(firstRow.dataset.state, 'ok-commented');
-assert.equal(firstRow.children[2].textContent, 'OK · commented');
+assert.equal(firstRow.dataset.state, 'ok');
+assert.equal(firstDecision.value, 'ok');
 assert.deepEqual(
   JSON.parse(storage.getItem(reviewStorageKey(release.id, 'rgb-view'))),
-  { ok: true, comment: '  Exact colors and camera angle match.  ' },
+  { status: 'ok', comment: '  Exact colors and camera angle match.  ' },
+);
+
+firstDecision.value = 'issue';
+firstDecision.dispatch('change');
+assert.equal(firstRow.dataset.state, 'issue');
+assert.equal(
+  firstComment.value,
+  '  Exact colors and camera angle match.  ',
+  'changing acceptance state preserves the note',
+);
+assert.deepEqual(
+  JSON.parse(storage.getItem(reviewStorageKey(release.id, 'rgb-view'))),
+  { status: 'issue', comment: '  Exact colors and camera angle match.  ' },
 );
 
 const report = formatReviewReport(release, new Map([
-  ['rgb-view', { ok: true, comment: 'Exact colors and camera angle match.' }],
-  ['fifo', { ok: false, comment: '' }],
+  ['rgb-view', { status: 'ok', comment: 'Exact colors and camera angle match.' }],
+  ['fifo', { status: 'issue', comment: 'Mask was stale; tray ordering was not accepted.' }],
 ]));
 assert.equal(report, [
   'Candidate feedback · candidate-42',
-  '- OK · COMMENTED · RGB view is visible before its mask — Exact colors and camera angle match.',
-  '- PENDING · Views leave the tray in order',
+  '- OK · RGB view is visible before its mask',
+  '  Note: Exact colors and camera angle match.',
+  '- ISSUE · Views leave the tray in order',
+  '  Note: Mask was stale; tray ordering was not accepted.',
 ].join('\n'));
+assert.equal(
+  formatReviewReport({
+    id: 'no-sentiment',
+    reviewItems: [{ id: 'checked', label: 'Ambiguous-angle gate accepted' }],
+  }, new Map([
+    ['checked', { status: 'ok', comment: 'This note says the gate was not accepted.' }],
+  ])),
+  [
+    'Candidate feedback · no-sentiment',
+    '- OK · Ambiguous-angle gate accepted',
+    '  Note: This note says the gate was not accepted.',
+  ].join('\n'),
+  'free-form note sentiment never changes the explicit acceptance state',
+);
 
 root.children[3].children[0].dispatch('click');
 await new Promise((resolve) => setTimeout(resolve, 0));
@@ -192,11 +227,31 @@ const reloaded = createCandidateReviewInbox({
 });
 reloaded.render(release);
 const reloadedFirst = reloadedHost.children[0].children[1];
-assert.equal(reloadedFirst.children[0].children[0].checked, true);
+assert.equal(reloadedFirst.children[1].value, 'issue');
 assert.equal(
-  reloadedFirst.children[1].value,
+  reloadedFirst.children[2].value,
   '  Exact colors and camera angle match.  ',
   'feedback survives a recreated inbox/HMR reload',
+);
+
+const legacyRelease = {
+  id: 'legacy-schema',
+  reviewItems: [{ id: 'legacy-check', label: 'Legacy checkbox decision' }],
+};
+storage.setItem(
+  reviewStorageKey(legacyRelease.id, 'legacy-check'),
+  JSON.stringify({ ok: true, comment: 'Keep this legacy note.' }),
+);
+reloaded.render(legacyRelease);
+const legacyRow = reloadedHost.children[0].children[1];
+assert.equal(legacyRow.children[1].value, 'ok', 'v1 checked state migrates to explicit OK');
+assert.equal(legacyRow.children[2].value, 'Keep this legacy note.', 'v1 note is preserved');
+legacyRow.children[1].value = 'pending';
+legacyRow.children[1].dispatch('change');
+assert.deepEqual(
+  JSON.parse(storage.getItem(reviewStorageKey(legacyRelease.id, 'legacy-check'))),
+  { status: 'pending', comment: 'Keep this legacy note.' },
+  'changing a migrated acceptance state preserves its note',
 );
 
 reloaded.render({ ...release, id: 'candidate-43' });
@@ -223,17 +278,17 @@ const hmrInbox = createCandidateReviewInbox({
 });
 hmrInbox.render(reviewReleaseForNotice(loadedRc1, loadedRc1, false));
 const rc1Row = hmrHost.children[0].children[1];
-rc1Row.children[0].children[0].checked = true;
-rc1Row.children[0].children[0].dispatch('change');
+rc1Row.children[1].value = 'ok';
+rc1Row.children[1].dispatch('change');
 hmrInbox.render(reviewReleaseForNotice(loadedRc1, announcedRc2, true));
 const hmrRow = hmrHost.children[0].children[1];
 assert.equal(hmrHost.children[0].dataset.releaseId, 'rc1');
 assert.equal(
-  hmrRow.children[0].children[2].textContent,
+  hmrRow.children[0].textContent,
   'Check the loaded rc1 behavior',
   'an HMR announcement cannot expose checks for code that is not loaded',
 );
-assert.equal(hmrRow.children[0].children[0].checked, true);
+assert.equal(hmrRow.children[1].value, 'ok');
 assert.equal(
   storage.getItem(reviewStorageKey('rc2', 'same-check')),
   null,
@@ -241,7 +296,7 @@ assert.equal(
 );
 assert.deepEqual(
   JSON.parse(storage.getItem(reviewStorageKey('rc1', 'same-check'))),
-  { ok: true, comment: '' },
+  { status: 'ok', comment: '' },
   'loaded rc1 feedback remains persisted under rc1',
 );
 
