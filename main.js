@@ -5999,6 +5999,20 @@ async function tryOccluderRevealPass({
   if (session.revealAttempts.has(view.id)) return false;
   session.revealAttempts.add(view.id);
 
+  // Occluder removal must never mutate the renderer that is driving the live
+  // cockpit. The previous implementation hid Gaussians on `state.splat` and
+  // kept them hidden across view sorting, inference, and fusion awaits. That
+  // made the scene flash black for seconds while only the selection overlay
+  // remained visible. A reveal pass is only valid when the isolated tracking
+  // renderer owns its own temporary-visibility mask.
+  const revealSource = session.renderSource;
+  if (!revealSource
+    || revealSource === state.splat
+    || typeof revealSource.setTemporaryHiddenSplats !== 'function'
+    || typeof revealSource.clearTemporaryHiddenSplats !== 'function') {
+    return false;
+  }
+
   const reveal = findOccluderRevealCandidates({
     projection: intactProjection,
     centers: state.splat.centers,
@@ -6024,7 +6038,7 @@ async function tryOccluderRevealPass({
     active: 1,
   });
 
-  state.splat.setTemporaryHiddenSplats(reveal.candidates);
+  revealSource.setTemporaryHiddenSplats(reveal.candidates);
   let revealRenderFinishedAt = performance.now();
   let revealInferenceFinishedAt = revealRenderFinishedAt;
   try {
@@ -6185,7 +6199,7 @@ async function tryOccluderRevealPass({
     console.warn('[multiview] diagnostic reveal failed safely', error);
     return false;
   } finally {
-    state.splat.clearTemporaryHiddenSplats();
+    revealSource.clearTemporaryHiddenSplats();
   }
 }
 

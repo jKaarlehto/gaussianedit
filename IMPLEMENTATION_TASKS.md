@@ -10,6 +10,14 @@ The interaction north star and plain-language rules live in
 Do these in order. New UX requests are queued below and do not replace this
 work until the scan path is measured and responsive.
 
+- [ ] Fix the current-view coordinate contract before any model call: a click
+  on the cockpit canvas must land on the identical pixel in the captured 2D
+  image, cropped editor, detector guidance, SAM prompt, and Gaussian lift.
+- [ ] Bound and time each part of “finishing the visible side”; a front-surface
+  mask must not launch an unbounded full-scene growth/refinement pass.
+- [ ] Never apply a synthetic-view visibility mask to the live cockpit
+  renderer. Occluder-removal passes may mutate only an isolated scan renderer
+  and must restore it before yielding.
 - [x] Fail closed before loading any scene or model unless WebGL reports a
   supported discrete NVIDIA/AMD adapter. Never silently run the app on an
   integrated or software renderer.
@@ -19,12 +27,17 @@ work until the scan path is measured and responsive.
   cockpit scene for a synthetic camera.
 - [x] Measure cutout construction, per-view sorting, GPU readback, image copy,
   and JPEG encoding separately; expose the last scan timings for diagnostics.
-- [ ] Render the complete ordered view sequence first and fill the image tray
-  with real thumbnails so progress advances once per rendered frame.
+- [ ] Render the complete ordered view sequence first and feed real thumbnails
+  into a bounded FIFO tray in camera order, so progress advances once per
+  rendered frame without rebuilding or reordering existing items.
 - [ ] Submit that fixed sequence once to the GPU SAM 3 service; keep the main
   renderer and controls free while inference runs and provide one Cancel action.
-- [ ] Replace each rendered thumbnail with its tracked mask as the backend
-  result arrives, then fuse that view into the 3D selection incrementally.
+- [ ] As each tracked mask returns, replace its own view thumbnail in place,
+  hold the mask briefly so the user can read it, then animate its mask evidence
+  as particles flying from that tray slot into the 3D hologram.
+- [ ] Remove a FIFO item only after its particle transfer has completed and its
+  evidence has been fused. The tray order and count must always explain which
+  rendered views are waiting, masked, transferring, or finished.
 - [ ] Ensure cancel/restart releases cutout buffers, staged image blobs, backend
   sessions, and stale masks immediately.
 
@@ -94,6 +107,9 @@ work until the scan path is measured and responsive.
   and a short scan wave.
 - [x] Align the preview to the camera view that produced the mask.
 - [x] Rock a single-view estimate instead of implying verified 360-degree coverage.
+- [ ] Hover pauses the hologram at its current orientation and hands orbit
+  control to the user. It must not reset the spin, camera, or fitted framing;
+  leaving hover resumes from the same orientation.
 - [ ] Render selected Gaussians with their actual anisotropic scale/rotation, or
   another representation that preserves the splat silhouette better than points.
 - [ ] Switch to full continuous rotation only after multiview coverage exists.
