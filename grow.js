@@ -13,7 +13,7 @@
  * object — nothing at click-time can. See README > "Going 3D-complete".
  */
 
-import { inMask } from './lift.js';
+import { inMask, projectionSlot } from './lift.js';
 
 /** CSR-style uniform grid. Built once at load; O(n) and allocation-free per query. */
 export function buildGrid(centers, count, cell) {
@@ -62,6 +62,7 @@ export async function buildGridAsync(
   cell,
   onProgress = () => {},
   shouldCancel = () => false,
+  domain = null,
 ) {
   const CHUNK = 100_000;
   const yieldTask = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -69,37 +70,57 @@ export async function buildGridAsync(
     if (shouldCancel()) throw new DOMException('Grid build superseded', 'AbortError');
   };
 
-  let minX = Infinity, minY = Infinity, minZ = Infinity;
-  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-  for (let i0 = 0; i0 < count; i0 += CHUNK) {
-    const i1 = Math.min(count, i0 + CHUNK);
-    for (let i = i0; i < i1; i++) {
-      const x = centers[i * 3], y = centers[i * 3 + 1], z = centers[i * 3 + 2];
-      if (x < minX) minX = x; if (x > maxX) maxX = x;
-      if (y < minY) minY = y; if (y > maxY) maxY = y;
-      if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+  let minX = domain?.min?.x ?? Infinity;
+  let minY = domain?.min?.y ?? Infinity;
+  let minZ = domain?.min?.z ?? Infinity;
+  let maxX = domain?.max?.x ?? -Infinity;
+  let maxY = domain?.max?.y ?? -Infinity;
+  let maxZ = domain?.max?.z ?? -Infinity;
+  if (!domain) {
+    for (let i0 = 0; i0 < count; i0 += CHUNK) {
+      const i1 = Math.min(count, i0 + CHUNK);
+      for (let i = i0; i < i1; i++) {
+        const x = centers[i * 3], y = centers[i * 3 + 1], z = centers[i * 3 + 2];
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+        if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+      }
+      check();
+      onProgress(0.2 * i1 / count, 'measuring scene');
+      await yieldTask();
     }
-    check();
-    onProgress(0.2 * i1 / count, 'measuring scene');
-    await yieldTask();
+  } else {
+    onProgress(0.2, 'measuring scene');
   }
 
   const nx = Math.max(1, Math.ceil((maxX - minX) / cell) + 1);
   const ny = Math.max(1, Math.ceil((maxY - minY) / cell) + 1);
   const nz = Math.max(1, Math.ceil((maxZ - minZ) / cell) + 1);
   const nCells = nx * ny * nz;
+  if (!Number.isSafeInteger(nCells) || nCells > 100_000_000) {
+    throw new Error('Scene index is too large; use robust scene bounds.');
+  }
   const cellOf = new Int32Array(count);
+  cellOf.fill(-1);
   const counts = new Int32Array(nCells + 1);
+  let includedCount = 0;
 
   for (let i0 = 0; i0 < count; i0 += CHUNK) {
     const i1 = Math.min(count, i0 + CHUNK);
     for (let i = i0; i < i1; i++) {
-      const ix = Math.min(nx - 1, ((centers[i * 3] - minX) / cell) | 0);
-      const iy = Math.min(ny - 1, ((centers[i * 3 + 1] - minY) / cell) | 0);
-      const iz = Math.min(nz - 1, ((centers[i * 3 + 2] - minZ) / cell) | 0);
+      const x = centers[i * 3];
+      const y = centers[i * 3 + 1];
+      const z = centers[i * 3 + 2];
+      if (x < minX || x > maxX || y < minY || y > maxY || z < minZ || z > maxZ) {
+        continue;
+      }
+      const ix = Math.min(nx - 1, ((x - minX) / cell) | 0);
+      const iy = Math.min(ny - 1, ((y - minY) / cell) | 0);
+      const iz = Math.min(nz - 1, ((z - minZ) / cell) | 0);
       const c = (iz * ny + iy) * nx + ix;
       cellOf[i] = c;
       counts[c + 1]++;
+      includedCount++;
     }
     check();
     onProgress(0.2 + 0.3 * i1 / count, 'binning splats');
@@ -114,18 +135,33 @@ export async function buildGridAsync(
     await yieldTask();
   }
 
-  const items = new Int32Array(count);
+  const items = new Int32Array(includedCount);
   const cursor = counts.slice(0, nCells);
   for (let i0 = 0; i0 < count; i0 += CHUNK) {
     const i1 = Math.min(count, i0 + CHUNK);
-    for (let i = i0; i < i1; i++) items[cursor[cellOf[i]]++] = i;
+    for (let i = i0; i < i1; i++) {
+      const cellIndex = cellOf[i];
+      if (cellIndex >= 0) items[cursor[cellIndex]++] = i;
+    }
     check();
     onProgress(0.65 + 0.35 * i1 / count, 'finalizing index');
     await yieldTask();
   }
 
   onProgress(1, 'index ready');
-  return { nx, ny, nz, cell, minX, minY, minZ, start: counts, items };
+  return {
+    nx,
+    ny,
+    nz,
+    cell,
+    minX,
+    minY,
+    minZ,
+    start: counts,
+    items,
+    cellOf,
+    includedCount,
+  };
 }
 
 export function grow({
@@ -134,11 +170,12 @@ export function grow({
   radius, steps, depthBand, colorTol = 60,
 }) {
   const count = centers.length / 3;
-  const visited = new Uint8Array(count);
+  const visited = new Uint8Array(proj.projectedCount ?? count);
   const selected = [];
   for (const seed of seeds) {
-    if (visited[seed]) continue;
-    visited[seed] = 1;
+    const slot = projectionSlot(proj, seed);
+    if (slot < 0 || visited[slot]) continue;
+    visited[slot] = 1;
     selected.push(seed);
   }
   if (steps <= 0 || radius <= 0) return new Set(selected);
@@ -150,7 +187,9 @@ export function grow({
   let frontier = selected.slice();
   let depthMin = Infinity, depthMax = -Infinity;
   for (const s of seeds) {
-    const d = proj.sd[s];
+    const slot = projectionSlot(proj, s);
+    if (slot < 0) continue;
+    const d = proj.sd[slot];
     if (d < depthMin) depthMin = d;
     if (d > depthMax) depthMax = d;
   }
@@ -161,6 +200,7 @@ export function grow({
     const next = [];
 
     for (const s of frontier) {
+      if (grid.cellOf?.[s] < 0) continue;
       const px = centers[s * 3], py = centers[s * 3 + 1], pz = centers[s * 3 + 2];
       const sr = colors ? colors[s * 3] : 0;
       const sg = colors ? colors[s * 3 + 1] : 0;
@@ -180,14 +220,15 @@ export function grow({
             const c = (cz * ny + cy) * nx + cx;
             for (let k = start[c]; k < start[c + 1]; k++) {
               const j = items[k];
-              if (visited[j]) continue;
+              const slot = projectionSlot(proj, j);
+              if (slot < 0 || visited[slot]) continue;
 
               const ex = centers[j * 3] - px;
               const ey = centers[j * 3 + 1] - py;
               const ez = centers[j * 3 + 2] - pz;
               if (ex * ex + ey * ey + ez * ez > r2) continue;
 
-              const d = proj.sd[j];
+              const d = proj.sd[slot];
               if (d <= 0 || d < near || d > far) continue;
               if (!inMask(j, proj, mask, maskW, maskH, viewW, viewH)) continue;
 
@@ -198,7 +239,7 @@ export function grow({
                 if (cr > colorTol * 3) continue;
               }
 
-              visited[j] = 1;
+              visited[slot] = 1;
               selected.push(j);
               next.push(j);
             }
@@ -222,11 +263,12 @@ export async function growAsync({
   radius, steps, depthBand, colorTol = 60,
 }, onProgress = () => {}, shouldCancel = () => false) {
   const count = centers.length / 3;
-  const visited = new Uint8Array(count);
+  const visited = new Uint8Array(proj.projectedCount ?? count);
   const selected = [];
   for (const seed of seeds) {
-    if (visited[seed]) continue;
-    visited[seed] = 1;
+    const slot = projectionSlot(proj, seed);
+    if (slot < 0 || visited[slot]) continue;
+    visited[slot] = 1;
     selected.push(seed);
   }
   if (steps <= 0 || radius <= 0) return new Set(selected);
@@ -237,7 +279,9 @@ export async function growAsync({
   let frontier = selected.slice();
   let depthMin = Infinity, depthMax = -Infinity;
   for (const seed of seeds) {
-    const depth = proj.sd[seed];
+    const slot = projectionSlot(proj, seed);
+    if (slot < 0) continue;
+    const depth = proj.sd[slot];
     if (depth < depthMin) depthMin = depth;
     if (depth > depthMax) depthMax = depth;
   }
@@ -251,6 +295,7 @@ export async function growAsync({
       const s1 = Math.min(frontier.length, s0 + FRONTIER_CHUNK);
       for (let si = s0; si < s1; si++) {
         const source = frontier[si];
+        if (grid.cellOf?.[source] < 0) continue;
         const px = centers[source * 3];
         const py = centers[source * 3 + 1];
         const pz = centers[source * 3 + 2];
@@ -270,14 +315,15 @@ export async function growAsync({
               const cellIndex = (cz * ny + cy) * nx + cx;
               for (let k = start[cellIndex]; k < start[cellIndex + 1]; k++) {
                 const candidate = items[k];
-                if (visited[candidate]) continue;
+                const slot = projectionSlot(proj, candidate);
+                if (slot < 0 || visited[slot]) continue;
 
                 const ex = centers[candidate * 3] - px;
                 const ey = centers[candidate * 3 + 1] - py;
                 const ez = centers[candidate * 3 + 2] - pz;
                 if (ex * ex + ey * ey + ez * ez > r2) continue;
 
-                const depth = proj.sd[candidate];
+                const depth = proj.sd[slot];
                 if (depth <= 0 || depth < near || depth > far) continue;
                 if (!inMask(candidate, proj, mask, maskW, maskH, viewW, viewH)) continue;
 
@@ -288,7 +334,7 @@ export async function growAsync({
                   if (colorDistance > colorTol * 3) continue;
                 }
 
-                visited[candidate] = 1;
+                visited[slot] = 1;
                 selected.push(candidate);
                 next.push(candidate);
               }

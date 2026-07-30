@@ -47,12 +47,16 @@ registerSegmentationModel({
     modelId: 'Xenova/slimsam-77-uniform',
     architecture: 'sam',
     family: 'slimsam',
+    // Fast is the always-on interaction path. A 640 px working image cuts the
+    // WebGPU encoder cost substantially; users can explicitly choose the
+    // accurate provider when a difficult edge warrants the extra resolution.
+    maxInputSide: 640,
   }),
 });
 registerSegmentationModel({
   id: 'accurate',
-  label: 'SAM 3 accurate',
-  description: 'SAM 3 Tracker is larger but improves difficult boundaries and refinements.',
+  label: 'Accurate mask',
+  description: 'Rerun this one frozen image with the slower SAM 3 mask model. This does not scan hidden sides.',
   create: () => new SamPromptModel({
     id: 'accurate',
     modelId: 'onnx-community/sam3-tracker-ONNX',
@@ -60,5 +64,6 @@ registerSegmentationModel({
     family: 'sam3',
     // Reduces the browser download and GPU memory footprint substantially.
     webgpuDtype: 'q4f16',
+    maxInputSide: 1024,
   }),
 });

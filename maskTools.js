@@ -115,12 +115,21 @@ export function paintMask(mask, edits, w, h, x, y, radius, add) {
 export function combineMasks(candidates, w, h, mode = 'smart') {
   if (!candidates.length) throw new Error('At least one starting-mask source is required.');
   const mask = new Uint8Array(w * h);
+  const primary = mode === 'smart'
+    ? candidates.find((candidate) => candidate.role === 'primary')
+    : null;
   const required = mode === 'union' ? 1
     : mode === 'intersection' ? candidates.length
       : Math.floor(candidates.length / 2) + 1;
 
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
+      if (primary) {
+        const sx = Math.min(primary.w - 1, Math.floor(x * primary.w / w));
+        const sy = Math.min(primary.h - 1, Math.floor(y * primary.h / h));
+        mask[y * w + x] = primary.mask[sy * primary.w + sx] ? 1 : 0;
+        continue;
+      }
       let votes = 0;
       for (const candidate of candidates) {
         const sx = Math.min(candidate.w - 1, Math.floor(x * candidate.w / w));
@@ -131,4 +140,78 @@ export function combineMasks(candidates, w, h, mode = 'smart') {
     }
   }
   return mask;
+}
+
+/**
+ * Expand (positive pixels) or contract (negative pixels) a binary mask.
+ * Repeated 8-neighbour morphology is predictable for an interactive slider
+ * and preserves manually painted edits after the provider masks are combined.
+ */
+export function offsetMask(source, w, h, pixels = 0) {
+  const passes = Math.min(24, Math.abs(Math.round(pixels)));
+  if (!passes) return source.slice();
+  const expand = pixels > 0;
+  let current = source.slice();
+
+  for (let pass = 0; pass < passes; pass++) {
+    const next = current.slice();
+    for (let y = 0; y < h; y++) {
+      const y0 = Math.max(0, y - 1);
+      const y1 = Math.min(h - 1, y + 1);
+      for (let x = 0; x < w; x++) {
+        const index = y * w + x;
+        if (expand ? current[index] : !current[index]) continue;
+        let neighbour = expand ? 0 : 1;
+        for (let ny = y0; ny <= y1; ny++) {
+          const row = ny * w;
+          for (let nx = Math.max(0, x - 1); nx <= Math.min(w - 1, x + 1); nx++) {
+            if (expand && current[row + nx]) neighbour = 1;
+            if (!expand && !current[row + nx]) neighbour = 0;
+          }
+        }
+        next[index] = neighbour;
+      }
+    }
+    current = next;
+  }
+  return current;
+}
+
+/**
+ * Confidence falls toward the inside of a mask boundary. The binary mask
+ * remains authoritative; this field only controls provisional/confirmed
+ * styling and thresholding after splats are lifted.
+ */
+export function buildMaskConfidence(mask, w, h, softnessPixels = 0) {
+  const confidence = new Float32Array(mask.length);
+  const passes = Math.min(18, Math.max(0, Math.round(softnessPixels)));
+  if (!passes) {
+    for (let i = 0; i < mask.length; i++) confidence[i] = mask[i];
+    return confidence;
+  }
+
+  let current = mask.slice();
+  for (let pass = 0; pass < passes; pass++) {
+    const next = current.slice();
+    const boundaryConfidence = 0.48 + 0.47 * ((pass + 1) / passes);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const index = y * w + x;
+        if (!current[index]) continue;
+        let boundary = x === 0 || y === 0 || x === w - 1 || y === h - 1;
+        if (!boundary) {
+          boundary = !current[index - 1] || !current[index + 1]
+            || !current[index - w] || !current[index + w];
+        }
+        if (!boundary) continue;
+        next[index] = 0;
+        confidence[index] = Math.max(confidence[index], boundaryConfidence);
+      }
+    }
+    current = next;
+  }
+  for (let i = 0; i < current.length; i++) {
+    if (current[i]) confidence[i] = 1;
+  }
+  return confidence;
 }

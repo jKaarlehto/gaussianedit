@@ -4,7 +4,11 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "vite",
+    "tracker": ".runtime\\sam3-service-venv\\Scripts\\python.exe -m uvicorn tracking_service.app:app --host 127.0.0.1 --port 8091",
+    "test:cutout": "node scripts/test-cutout-buffer.mjs",
+    "test:projection-roi": "node scripts/test-projection-roi.mjs",
     "build": "vite build",
     "preview": "vite preview"
   },

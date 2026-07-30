@@ -25,6 +25,7 @@ export class SamPromptModel {
     family = architecture,
     webgpuDtype = 'fp16',
     wasmDtype = 'q8',
+    maxInputSide = 1024,
   }) {
     this.id = id;
     this.modelId = modelId;
@@ -32,11 +33,24 @@ export class SamPromptModel {
     this.family = family;
     this.webgpuDtype = webgpuDtype;
     this.wasmDtype = wasmDtype;
+    this.maxInputSide = maxInputSide;
     this.ready = false;
     this.viewRevision = -1;
+    this.loading = null;
   }
 
   async load(onProgress) {
+    if (this.ready) return;
+    if (this.loading) return this.loading;
+    this.loading = this._load(onProgress);
+    try {
+      await this.loading;
+    } finally {
+      this.loading = null;
+    }
+  }
+
+  async _load(onProgress) {
     const device = navigator.gpu ? 'webgpu' : 'wasm';
     this.model = await this.ModelClass.from_pretrained(this.modelId, {
       dtype: device === 'webgpu' ? this.webgpuDtype : this.wasmDtype,
@@ -50,8 +64,28 @@ export class SamPromptModel {
 
   /** @param {HTMLCanvasElement} canvas an RGBA snapshot of the rendered view */
   async encode(canvas) {
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    const { data, width, height } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const scale = Math.min(1, this.maxInputSide / Math.max(canvas.width, canvas.height));
+    let inputCanvas = canvas;
+    if (scale < 1) {
+      this.inputCanvas ??= document.createElement('canvas');
+      this.inputCanvas.width = Math.max(1, Math.round(canvas.width * scale));
+      this.inputCanvas.height = Math.max(1, Math.round(canvas.height * scale));
+      this.inputCanvas.getContext('2d').drawImage(
+        canvas,
+        0,
+        0,
+        this.inputCanvas.width,
+        this.inputCanvas.height,
+      );
+      inputCanvas = this.inputCanvas;
+    }
+    const ctx = inputCanvas.getContext('2d', { willReadFrequently: true });
+    const { data, width, height } = ctx.getImageData(
+      0,
+      0,
+      inputCanvas.width,
+      inputCanvas.height,
+    );
     const image = new RawImage(new Uint8ClampedArray(data), width, height, 4);
 
     const nextInputs = await this.processor(image);
@@ -59,8 +93,10 @@ export class SamPromptModel {
 
     disposeTensorRecord(this.embeddings);
     this.inputs?.pixel_values?.dispose?.();
-    this.imageW = width;
-    this.imageH = height;
+    // Prompt coordinates remain in the frozen projection's coordinate space,
+    // even when the fast provider analyzes a smaller copy internally.
+    this.imageW = canvas.width;
+    this.imageH = canvas.height;
     this.inputs = nextInputs;
     this.embeddings = nextEmbeddings;
   }
@@ -116,7 +152,11 @@ export class SamPromptModel {
       let area = 0;
       const off = c * H * W;
       for (let i = 0; i < H * W; i++) {
-        const on = src[off + i] ? 1 : 0;
+        // post_process_masks may return logits rather than booleans. Negative
+        // logits are non-zero (truthy in JavaScript) but mean background.
+        // Explicitly thresholding at zero prevents an otherwise plausible SAM
+        // result from becoming a near-full-frame mask.
+        const on = Number(src[off + i]) > 0 ? 1 : 0;
         m[i] = on;
         area += on;
       }

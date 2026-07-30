@@ -16,6 +16,7 @@
     --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
   canvas { display: block; }
   button, input { touch-action: manipulation; }
@@ -31,11 +32,108 @@
   }
   #ui header {
     padding: 8px 10px; border-bottom: 1px solid var(--line);
-    display: flex; justify-content: space-between; align-items: baseline;
+    display: grid; grid-template-columns: 1fr auto; align-items: baseline;
   }
   #ui header b { font-weight: 600; letter-spacing: .08em; text-transform: uppercase; font-size: 10px; }
+  #gpuAdapter {
+    grid-column: 1 / -1;
+    margin-top: 2px;
+    color: var(--dim);
+    font-size: 8px;
+    overflow: hidden;
+    text-align: right;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #gpuAdapter[data-kind="discrete"] { color: #72dfb5; }
+  #gpuAdapter[data-kind="integrated"] { color: #efc45d; }
+  #gpuAdapter[data-kind="software"] { color: #ff7655; }
+  #gpuGate {
+    position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center;
+    padding: 24px; background:
+      radial-gradient(circle at 50% 42%, rgba(75, 22, 12, .23), transparent 36%),
+      #080a0d;
+    color: var(--ink); font: 12px/1.55 var(--mono);
+  }
+  #gpuGate article {
+    width: min(520px, 100%); padding: 24px;
+    border-left: 2px solid var(--hot);
+    background: rgba(18, 22, 27, .92);
+  }
+  #gpuGate h1 {
+    margin: 0 0 10px; color: var(--hot); font-size: 14px;
+    letter-spacing: .08em; text-transform: uppercase;
+  }
+  #gpuGate p { margin: 7px 0; color: var(--dim); }
+  #gpuGate strong { color: var(--ink); }
+  #gpuGate button {
+    margin-top: 12px; padding: 7px 14px; border: 1px solid var(--hot);
+    background: var(--hot); color: #0d0f12; cursor: pointer;
+    font: 600 11px var(--mono);
+  }
+  #buildNotice {
+    position: fixed; top: 8px; left: 50%; z-index: 90;
+    width: min(580px, calc(100vw - 600px)); min-width: 360px;
+    transform: translateX(-50%);
+    border: 1px solid rgba(112, 215, 255, .25);
+    background: linear-gradient(105deg, rgba(12, 18, 23, .95), rgba(12, 18, 23, .78));
+    box-shadow: 0 8px 28px rgba(0, 0, 0, .22);
+    color: var(--ink); font: 9px/1.45 var(--mono);
+    backdrop-filter: blur(8px);
+  }
+  #buildNotice[data-status="stable"] { border-color: rgba(88, 214, 168, .38); }
+  #buildNotice[data-update="true"] {
+    border-color: rgba(255, 92, 43, .72);
+    box-shadow: 0 0 20px rgba(255, 92, 43, .12);
+  }
+  #buildNoticeSummary {
+    min-height: 28px; padding: 5px 7px 5px 10px;
+    display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px;
+  }
+  #buildNoticeSummary::before {
+    content: ""; width: 5px; height: 5px; border-radius: 50%;
+    background: #70d7ff; box-shadow: 0 0 8px rgba(112, 215, 255, .65);
+  }
+  #buildNotice[data-status="stable"] #buildNoticeSummary::before { background: var(--ok); }
+  #buildNotice[data-update="true"] #buildNoticeSummary::before {
+    background: var(--hot); animation: workPulse 1.15s ease-in-out infinite;
+  }
+  #buildNoticeText {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    letter-spacing: .03em;
+  }
+  #buildNoticeText b { color: #a9f6ff; font-size: 9px; text-transform: uppercase; }
+  #buildNotice[data-status="stable"] #buildNoticeText b { color: var(--ok); }
+  #buildNotice[data-update="true"] #buildNoticeText b { color: var(--hot); }
+  #buildNoticeActions { display: flex; gap: 4px; }
+  #buildNotice button {
+    min-width: 24px; height: 20px; padding: 0 6px;
+    border: 1px solid var(--line); background: transparent; color: var(--dim);
+    cursor: pointer; font: 8px var(--mono);
+  }
+  #buildNotice button:hover { border-color: #70d7ff; color: #a9f6ff; }
+  #buildNoticeReload { color: var(--hot) !important; border-color: rgba(255, 92, 43, .5) !important; }
+  #buildNoticeDetails {
+    padding: 8px 12px 10px 29px; border-top: 1px solid var(--line);
+  }
+  #buildNoticeDetails ul { margin: 0; padding: 0 0 0 14px; color: #8f9ba7; }
+  #buildNoticeDetails li + li { margin-top: 3px; }
+  #buildNoticeMeta { margin-top: 7px; color: #56636e; font-size: 8px; }
+  #buildNotice[data-collapsed="true"] {
+    width: auto; min-width: 0; left: 50%; border-color: rgba(112, 215, 255, .16);
+    box-shadow: none;
+  }
+  #buildNotice[data-collapsed="true"] #buildNoticeSummary { min-height: 24px; padding-block: 3px; }
+  #buildNotice[data-collapsed="true"] #buildNoticeDetails,
+  #buildNotice[data-collapsed="true"] #buildNoticeReload { display: none; }
+  #buildNotice[data-collapsed="true"] #buildNoticeText span { display: none; }
+  body[data-gpu-blocked="true"] #buildNotice { display: none; }
   #ui section { padding: 8px 10px; border-bottom: 1px solid var(--line); }
   #ui section:last-child { border-bottom: 0; }
+  #ui .rail-label {
+    margin: 0 0 5px; color: #8da4a6; font-size: 8px; font-weight: 500;
+    letter-spacing: .1em; text-transform: uppercase;
+  }
   label { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 4px 0; color: var(--dim); }
   label span.v { color: var(--ink); font-variant-numeric: tabular-nums; }
   input[type=range] { flex: 1; accent-color: var(--hot); height: 14px; }
@@ -47,18 +145,46 @@
   }
   .seg button + button { border-left: 0; }
   .seg button[aria-pressed="true"] { background: var(--hot); color: #0d0f12; border-color: var(--hot); }
+  #modelQuality button[data-loading="true"] {
+    color: #9ff8eb; border-color: #70d7ff;
+    box-shadow: inset 0 -1px #70d7ff;
+  }
+  #modelQuality button[data-loading="true"]::after { content: " · loading"; font-size: 8px; }
   .row { display: flex; gap: 6px; margin-top: 6px; }
   .row button {
     flex: 1; padding: 6px 0; background: transparent; color: var(--ink);
     border: 1px solid var(--line); font-family: var(--mono); font-size: 10px; cursor: pointer;
   }
   .row button:hover { border-color: var(--hot); color: var(--hot); }
+  #explorationControls button[aria-pressed="true"] {
+    border-color: #70d7ff;
+    color: #a9f6ff;
+    box-shadow: inset 0 -1px #70d7ff;
+  }
+  body[data-exploration="true"] #ui {
+    background: linear-gradient(135deg, rgba(11, 17, 21, .74), rgba(11, 17, 21, .28));
+    backdrop-filter: blur(3px);
+  }
+  body[data-exploration="true"] #workPanel,
+  body[data-exploration="true"] #selectionControls,
+  body[data-exploration="true"] #projectionPip,
+  body[data-exploration="true"] #selectionProps,
+  body[data-exploration="true"] #objectPreviewHud,
+  body[data-exploration="true"] #changeDiffHud,
+  body[data-exploration="true"] #focusRefineHud,
+  body[data-exploration="true"] #encodingCue,
+  body[data-exploration="true"] #encodingCursor,
+  body[data-exploration="true"] #detectorSuggestionLabel,
+  body[data-exploration="true"] #selectionOutline {
+    display: none !important;
+  }
   #bar { height: 2px; background: var(--line); }
   #bar i { display: block; height: 100%; width: 0; background: var(--hot); transition: width .1s linear; }
   #status { color: var(--dim); }
   #status.busy { color: var(--hot); }
   #status.ready { color: var(--ok); }
   #workPanel { min-height: 66px; }
+  #workPanel[hidden] { display: none; }
   #workMain { display: flex; align-items: center; gap: 7px; }
   #workMain i {
     flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%;
@@ -79,6 +205,23 @@
   }
   #workSteps span[data-state="done"] { border-color: var(--ok); color: var(--ok); }
   #workSteps span[data-state="active"] { border-color: var(--hot); color: var(--ink); }
+  #workJobs { display: grid; gap: 4px; margin-top: 7px; }
+  #workJobs[hidden] { display: none; }
+  #workJobs div {
+    display: grid; grid-template-columns: 7px minmax(0, 1fr) auto;
+    align-items: center; gap: 6px; min-width: 0;
+    color: var(--dim); font-size: 8px;
+  }
+  #workJobs i { width: 5px; height: 5px; border-radius: 50%; background: var(--dim); }
+  #workJobs div[data-state="busy"] i,
+  #workJobs div[data-state="queued"] i { background: var(--hot); animation: workPulse 1.15s ease-in-out infinite; }
+  #workJobs div[data-state="ready"] i { background: var(--ok); }
+  #workJobs div[data-state="error"] i { background: #ef6b73; }
+  #workJobs b {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--ink); font-size: 8px; font-weight: 500;
+  }
+  #workJobs span { font-variant-numeric: tabular-nums; white-space: nowrap; }
   #workPanel[data-state="busy"] #workMain i,
   #workPanel[data-state="queued"] #workMain i {
     background: var(--hot); animation: workPulse 1.15s ease-in-out infinite;
@@ -101,21 +244,100 @@
     pointer-events: none; image-rendering: auto;
     filter: drop-shadow(0 0 2px #000) drop-shadow(0 0 2px var(--hot));
   }
-  #selectionOutline[data-editing="true"] {
-    pointer-events: auto; cursor: crosshair;
-  }
   #brushCursor {
     position: fixed; z-index: 11; display: none; pointer-events: none;
     border: 1px solid #fff; border-radius: 50%;
     box-shadow: 0 0 0 1px #000, 0 0 5px var(--hot);
     transform: translate(-50%, -50%);
   }
-  #viewport[data-selection-state="encoding"] { cursor: none; }
+  #detectorSuggestionLabel {
+    position: fixed; z-index: 9; display: none; pointer-events: none;
+    max-width: 210px; padding: 4px 7px 5px;
+    color: #9ff8eb; font: 8px var(--mono); letter-spacing: .06em;
+    text-transform: uppercase; white-space: nowrap;
+    background: linear-gradient(90deg, #061116e8, #061116a8 76%, transparent);
+    border-left: 1px solid #70d7ff;
+    text-shadow: 0 0 8px #5ad9ca99;
+    transform: translateY(-100%);
+  }
+  #detectorSuggestionLabel b { color: #e5fffb; font-weight: 600; }
+  #detectorSuggestionLabel span { color: #70d7ff; font-variant-numeric: tabular-nums; }
+  #viewport[data-selection-state="settling"],
+  #viewport[data-selection-state="encoding"] { cursor: progress; }
   #viewport[data-selection-state="ready"] { cursor: crosshair; }
-  #encodingCue {
-    position: fixed; z-index: 6; left: 50%; top: 50%;
-    min-width: 250px; padding: 10px 13px;
+  #viewport[data-selection-state="exploring"] { cursor: grab; }
+  #viewport[data-explore-look="true"] { cursor: grabbing; }
+  #exploreExitHud {
+    position: fixed;
+    z-index: 19;
+    left: 50%;
+    bottom: 22px;
+    display: none;
+    align-items: center;
+    gap: 12px;
+    min-width: 248px;
+    padding: 9px 13px;
+    transform: translateX(-50%);
+    border: 1px solid rgba(112, 215, 255, .56);
+    border-radius: 2px;
+    background:
+      linear-gradient(90deg, rgba(7, 16, 20, .38), rgba(15, 38, 45, .78), rgba(7, 16, 20, .38));
+    box-shadow: 0 0 18px rgba(76, 218, 234, .09), inset 0 -1px rgba(112, 215, 255, .18);
+    color: #a9f6ff;
+    cursor: pointer;
+    font: 9px var(--mono);
+    letter-spacing: .07em;
+    text-align: left;
+    text-transform: uppercase;
+  }
+  #exploreExitHud b { font-size: 10px; font-weight: 600; }
+  #exploreExitHud span { flex: 1; color: #76979c; font-size: 8px; text-transform: none; }
+  #exploreExitHud kbd { color: #79aeb4; }
+  #exploreExitHud:hover {
+    border-color: #70d7ff;
+    background:
+      linear-gradient(90deg, rgba(7, 16, 20, .48), rgba(18, 55, 65, .86), rgba(7, 16, 20, .48));
+  }
+  body[data-exploration="true"] #exploreExitHud { display: flex; }
+  body[data-exploration="true"][data-viewfinder-locked="true"] #exploreExitHud {
+    pointer-events: none;
+  }
+  #viewfinderCue {
+    position: fixed;
+    z-index: 18;
+    left: 50%;
+    top: 50%;
+    display: none;
     transform: translate(-50%, -50%);
+    color: rgba(169, 246, 255, .72);
+    font: 9px var(--mono);
+    letter-spacing: .08em;
+    pointer-events: none;
+    text-transform: uppercase;
+    text-shadow: 0 0 10px rgba(112, 215, 255, .4);
+  }
+  body[data-exploration="true"][data-viewfinder-locked="false"] #viewfinderCue {
+    display: block;
+  }
+  #exploreSpeedRow {
+    margin-top: 7px;
+  }
+  #exploreSpeedRow input { min-width: 0; }
+  #exploreSpeedValue { width: 34px; color: #a9f6ff; text-align: right; }
+  body:not([data-exploration="true"]) #exploreSpeedRow { display: none; }
+  #objectHintHud {
+    position: fixed;
+    inset: 0;
+    z-index: 7;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+  }
+  body[data-exploration="true"] #objectHintHud { display: none; }
+  #encodingCue {
+    position: fixed; z-index: 14; left: 50%; top: 12px;
+    min-width: 250px; padding: 10px 13px;
+    transform: translateX(-50%);
     border: 1px solid color-mix(in srgb, var(--hot) 72%, var(--line));
     border-radius: 4px; pointer-events: none;
     background: color-mix(in srgb, #090c10 88%, transparent);
@@ -144,8 +366,10 @@
     animation: none;
   }
   #encodingCursor {
-    position: fixed; z-index: 20; display: none; pointer-events: none;
-    width: 30px; height: 30px; transform: translate(-50%, -50%);
+    position: fixed; z-index: 20; display: none !important; pointer-events: none;
+    left: 0; top: 0; width: 30px; height: 30px;
+    transform: translate3d(-100px, -100px, 0) translate(-50%, -50%);
+    will-change: transform;
     border: 1px solid #fff9; border-radius: 50%;
     box-shadow: 0 0 0 1px #000b;
   }
@@ -176,19 +400,35 @@
   @media (prefers-reduced-motion: reduce) {
     #encodingCue::after, #encodingCursor::before, #encodingCursor::after,
     #workPanel[data-state="busy"] #workMain i,
-    #workPanel[data-state="queued"] #workMain i {
+    #workPanel[data-state="queued"] #workMain i,
+    #workJobs div[data-state="busy"] i,
+    #workJobs div[data-state="queued"] i {
       animation: none;
     }
   }
   #selectionProps {
-    position: fixed; z-index: 12; top: 12px; right: 12px; width: 292px;
-    max-height: calc(100vh - 24px); overflow-y: auto;
+    position: fixed; z-index: 12; top: 12px; right: 12px; width: 318px;
+    max-height: calc(100vh - 24px); overflow-x: hidden; overflow-y: auto;
+    display: flex; flex-direction: column;
     background: color-mix(in srgb, var(--panel) 94%, transparent);
     backdrop-filter: blur(10px); border: 1px solid var(--line); border-radius: 4px;
     box-shadow: 0 14px 40px #0009;
     font-family: var(--mono); font-size: 11px; color: var(--ink); line-height: 1.45;
+    scrollbar-gutter: stable;
+  }
+  #selectionProps[data-scanning="true"] {
+    background: #101318fa;
+    backdrop-filter: none;
+    contain: layout paint style;
   }
   #selectionProps[hidden] { display: none; }
+  #selectionProps > header { order: 0; }
+  #visibleSelectionStep { order: 1; }
+  #multiviewSection { order: 2; }
+  #gaussianCleanupStep { order: 3; }
+  #recursiveRefineStep { order: 4; }
+  #finishSelectionStep { order: 5; }
+  #advancedWorkflow { order: 6; }
   #selectionProps header {
     display: flex; justify-content: space-between; align-items: center;
     padding: 8px 10px; border-bottom: 1px solid var(--line);
@@ -197,6 +437,37 @@
   #selectionProps header span { color: var(--ok); font-variant-numeric: tabular-nums; }
   #selectionProps section { padding: 8px 10px; border-bottom: 1px solid var(--line); }
   #selectionProps section:last-child { border-bottom: 0; }
+  #selectionProps details.inspector-step {
+    width: 100%;
+    min-width: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  #selectionProps details.inspector-step > summary {
+    display: flex; align-items: center; gap: 7px;
+    min-width: 0;
+    padding: 8px 10px; color: var(--dim); cursor: pointer;
+    list-style: none; text-transform: uppercase; letter-spacing: .08em;
+    font-size: 9px; user-select: none;
+  }
+  #selectionProps details.inspector-step > summary::-webkit-details-marker { display: none; }
+  #selectionProps details.inspector-step > summary::before {
+    content: "+"; width: 11px; color: var(--hot); font-size: 11px;
+  }
+  #selectionProps details.inspector-step[open] > summary::before { content: "−"; }
+  #selectionProps details.inspector-step > summary span {
+    min-width: 0;
+    margin-left: auto; color: color-mix(in srgb, var(--dim) 70%, transparent);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 8px; letter-spacing: .04em;
+  }
+  #selectionProps details.inspector-step > .step-body {
+    width: 100%; min-width: 0; padding: 0 10px 9px; overflow-x: clip;
+  }
+  #selectionProps .row,
+  #selectionProps .seg,
+  #selectionProps label { min-width: 0; max-width: 100%; }
+  #selectionProps input[type="range"] { min-width: 0; }
+  #selectionProps .row button { min-width: 0; overflow-wrap: anywhere; }
   #selectionProps h3 {
     margin: 0 0 5px; color: var(--dim); font-size: 9px;
     text-transform: uppercase; letter-spacing: .08em; font-weight: 500;
@@ -217,6 +488,249 @@
     border: 1px solid var(--line); background: transparent; color: var(--dim); cursor: pointer;
   }
   #closeProps:hover { color: var(--ink); border-color: var(--ink); }
+  .toggle {
+    width: 100%; padding: 6px 8px; border: 1px solid var(--line);
+    background: transparent; color: var(--dim); cursor: pointer;
+    font: 10px var(--mono); text-align: left;
+  }
+  .toggle[aria-pressed="true"] { color: var(--ok); border-color: var(--ok); }
+  .toggle[aria-pressed="true"]::before { content: "● "; }
+  .toggle[aria-pressed="false"]::before { content: "○ "; }
+  #objectPreviewHud {
+    position: fixed; z-index: 11; top: 58px; right: 342px;
+    width: clamp(210px, 19vw, 280px); overflow: visible;
+    background: transparent; border: 0; box-shadow: none;
+    font-family: var(--mono); color: var(--ink);
+    isolation: isolate; pointer-events: none;
+  }
+  #objectPreviewHud[hidden] { display: none; }
+  #objectPreviewHud::before {
+    content: ""; position: absolute; z-index: -1; inset: 8% -10% -3%;
+    background:
+      radial-gradient(ellipse at 50% 66%, #63e6d218 0, #45bcd908 34%, transparent 70%);
+    filter: blur(10px); pointer-events: none;
+  }
+  #objectPreviewHud header {
+    position: absolute; z-index: 3; top: 22%; left: -3%; right: auto;
+    display: grid; justify-items: start; gap: 2px;
+    padding: 3px 0 3px 7px; border: 0; border-left: 1px solid #70d7ff55;
+    background: transparent;
+    font-size: 7px; opacity: .46; transition: opacity .16s ease;
+    pointer-events: auto;
+  }
+  #objectPreviewHud header b {
+    text-transform: uppercase; letter-spacing: .16em; font-size: 7px; font-weight: 500;
+  }
+  #objectPreviewStatus {
+    color: #84ead6; font-size: 7px; font-variant-numeric: tabular-nums;
+    text-shadow: 0 0 10px #53d7c899;
+  }
+  #objectPreviewViewport {
+    position: relative; height: clamp(150px, 20vh, 195px); overflow: visible;
+    background: transparent;
+  }
+  #objectPreviewViewport::before {
+    content: ""; position: absolute; z-index: 2; left: 50%; bottom: 12%;
+    width: 3px; height: 3px; transform: translate(-50%, 50%);
+    border-radius: 50%; pointer-events: none;
+    background: #9effefcc; box-shadow: 0 0 9px #61dfcc;
+  }
+  #objectPreviewViewport::after {
+    content: ""; position: absolute; z-index: 2; pointer-events: none;
+    left: 32%; right: 32%; bottom: 9%; height: 18%;
+    background: linear-gradient(180deg, #72ead000, #72ead00b 48%, #72ead022);
+    clip-path: polygon(43% 0, 57% 0, 100% 100%, 0 100%);
+    filter: blur(5px);
+  }
+  #objectPreviewCanvas {
+    position: relative; z-index: 1; width: 100%; height: 100%; cursor: crosshair;
+    pointer-events: auto; filter: drop-shadow(0 0 6px #5ad9ca45);
+  }
+  #objectPreviewCanvas:active { cursor: move; }
+  #objectPreviewCanvas[data-editing="cleanup"] {
+    cursor: crosshair;
+    filter: drop-shadow(0 0 7px #8e979a66);
+  }
+  #objectPreviewEmpty {
+    position: absolute; inset: 0; display: grid; place-items: center;
+    color: var(--dim); font-size: 10px; pointer-events: none;
+  }
+  #objectPreviewEmpty[hidden] { display: none; }
+  #objectPreviewHud footer {
+    position: absolute; z-index: 3; left: auto; right: -1%; bottom: 15%;
+    display: grid; justify-items: end; gap: 5px;
+    padding: 0; border: 0; color: #8aa9aa; font-size: 6px;
+    background: transparent;
+    opacity: .18; transform: translateX(2px);
+    transition: opacity .16s ease, transform .16s ease; pointer-events: auto;
+  }
+  #objectPreviewHud:hover header,
+  #objectPreviewHud:hover footer,
+  #objectPreviewHud:focus-within header,
+  #objectPreviewHud:focus-within footer { opacity: .95; transform: none; }
+  #objectPreviewHud[data-updating="true"] header {
+    opacity: .82; transform: none;
+  }
+  #objectPreviewHud[data-updating="true"] #objectPreviewStatus {
+    color: #70d7ff; text-shadow: 0 0 8px #70d7ff77;
+  }
+  #objectPreviewLegend { display: grid; gap: 2px; justify-items: end; }
+  #objectPreviewLegend i {
+    display: inline-block; width: 4px; height: 4px; margin-right: 2px; border-radius: 50%;
+    box-shadow: 0 0 6px currentColor;
+  }
+  #objectPreviewLegend .confirmed { background: var(--hot); }
+  #objectPreviewLegend .provisional { background: #f2c14e; }
+  #objectPreviewLegend .locked { background: var(--ok); }
+  #objectPreviewLegend .new { background: #70d7ff; }
+  #objectPreviewLegend .removed { background: #8e979a; }
+  #objectPreviewHud .preview-actions { display: flex; gap: 4px; }
+  #objectPreviewHud .preview-actions button {
+    padding: 2px 4px; border: 0; background: #07111680;
+    color: #77999a; cursor: pointer; font: 7px var(--mono);
+  }
+  #objectPreviewHud .preview-actions button:hover,
+  #objectPreviewHud .preview-actions button:focus-visible { color: #b9fff3; }
+  #objectPreviewHud .preview-actions button[aria-pressed="true"] {
+    color: #79e5d2; text-shadow: 0 0 8px #5bdac5;
+  }
+  #objectPreviewHud .preview-actions button[data-danger][aria-pressed="true"] {
+    color: #c5ced0; text-shadow: 0 0 8px #8e979a;
+  }
+  #scanTray {
+    position: fixed; z-index: 10; top: 10px; left: 50%;
+    width: min(650px, calc(100vw - 690px)); min-width: 260px;
+    transform: translateX(-50%);
+    color: #8aa4a8; font: 7px var(--mono); pointer-events: none;
+  }
+  #scanTray[hidden] { display: none; }
+  #scanTray header {
+    display: flex; align-items: center; justify-content: space-between;
+    height: 16px; padding: 0 3px 0 8px;
+    border-left: 1px solid #70d7ff66;
+    background: linear-gradient(90deg, #071116a8, #07111642 72%, transparent);
+    text-transform: uppercase; letter-spacing: .11em;
+  }
+  #scanTray header b { color: #c5f8f0; font-weight: 500; }
+  #scanTray[data-state="tracking"] header b,
+  #scanTray[data-state="fusing"] header b { color: #70d7ff; }
+  .scan-tray-track {
+    display: flex; justify-content: center; gap: 4px; overflow: hidden;
+    min-height: 66px; padding: 3px 2px 0;
+    mask-image: linear-gradient(90deg, transparent, #000 4%, #000 96%, transparent);
+  }
+  .scan-view-card {
+    position: relative; flex: 0 0 104px; height: 62px; overflow: hidden;
+    background: #03060866; box-shadow: inset 0 0 0 1px #6dd8d414;
+    opacity: .72; transition: opacity .2s ease, filter .2s ease;
+  }
+  .scan-view-card canvas {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+  }
+  .scan-view-image { opacity: .66; transition: opacity .32s ease, filter .32s ease; }
+  .scan-view-mask {
+    opacity: 0; mix-blend-mode: screen;
+    filter: drop-shadow(0 0 3px #70d7ff);
+    transition: opacity .22s ease;
+  }
+  .scan-view-card[data-state="tracked"] .scan-view-mask,
+  .scan-view-card[data-state="uncertain"] .scan-view-mask,
+  .scan-view-card[data-state="fusing"] .scan-view-mask { opacity: .82; }
+  .scan-view-card[data-state="tracked"] { opacity: .94; }
+  .scan-view-card[data-state="uncertain"] { box-shadow: inset 0 0 0 1px #f2c14e55; }
+  .scan-view-card[data-state="fusing"] .scan-view-image {
+    opacity: 0; filter: blur(5px);
+  }
+  .scan-view-card[data-state="fusing"] .scan-view-mask {
+    opacity: 1; animation: scan-mask-release .9s ease forwards;
+  }
+  .scan-view-card[data-state="skipped"] { opacity: .22; filter: grayscale(1); }
+  .scan-view-card > div {
+    position: absolute; z-index: 2; left: 4px; right: 4px; bottom: 3px;
+    display: flex; justify-content: space-between; gap: 3px;
+    color: #c6d5d5; text-shadow: 0 1px 4px #000, 0 0 4px #000;
+    white-space: nowrap;
+  }
+  .scan-view-card > div b {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    font-size: 6px; font-weight: 500; text-transform: uppercase;
+  }
+  .scan-view-card > div span { color: #70d7ff; font-size: 6px; }
+  .scan-particle-layer {
+    position: fixed; z-index: 15; inset: 0; pointer-events: none; overflow: hidden;
+  }
+  .scan-particle-layer i {
+    position: absolute; width: 2px; height: 2px; margin: -1px;
+    border-radius: 50%; background: #91f4ff;
+    box-shadow: 0 0 5px #70d7ff, 0 0 10px #70d7ff99;
+  }
+  @keyframes scan-mask-release {
+    0%, 42% { opacity: 1; filter: drop-shadow(0 0 4px #70d7ff); }
+    100% { opacity: 0; filter: blur(2px) drop-shadow(0 0 8px #70d7ff); }
+  }
+  #changeDiffHud {
+    position: fixed; z-index: 11; top: min(300px, 38vh); right: 342px;
+    width: min(290px, 24vw); padding: 5px 0 5px 9px;
+    border: 0; border-left: 1px solid #70d7ff66;
+    background: linear-gradient(90deg, #071116b8, #07111644 70%, transparent);
+    color: #88a5a7; font: 7px var(--mono); letter-spacing: .04em;
+    pointer-events: none;
+  }
+  #changeDiffHud[hidden] { display: none; }
+  #changeDiffHud b {
+    display: block; margin-bottom: 3px; color: #ddfff9;
+    font-size: 8px; font-weight: 500; letter-spacing: .12em; text-transform: uppercase;
+  }
+  #changeDiffStats { display: flex; gap: 7px; flex-wrap: wrap; }
+  #changeDiffStats .added { color: #70d7ff; }
+  #changeDiffStats .removed { color: #8e979a; }
+  #changeDiffStats .confirmed { color: var(--hot); }
+  #changeDiffStats .uncertain { color: #f2c14e; }
+  #changeDiffStats .protected { color: var(--ok); }
+  #changeDiffDetail { display: block; margin-top: 2px; color: #6f898b; }
+  #focusRefineHud {
+    position: fixed; z-index: 13; top: 13px; left: 50%; transform: translateX(-50%);
+    width: min(520px, calc(100vw - 600px)); min-width: 300px;
+    display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; align-items: center;
+    padding: 6px 8px 6px 12px; border: 0; border-left: 1px solid #70d7ff88;
+    background: linear-gradient(90deg, #071116cc, #07111680 72%, transparent);
+    color: #86a7aa; font: 8px var(--mono); letter-spacing: .04em;
+  }
+  #focusRefineHud[hidden] { display: none; }
+  #focusRefineHud b {
+    color: #dffff9; font-weight: 500; letter-spacing: .11em; text-transform: uppercase;
+  }
+  #focusRefineDetail { grid-column: 1; color: #789699; }
+  #focusRefineHud button {
+    grid-column: 2; grid-row: 1 / span 2; padding: 4px 7px;
+    border: 1px solid #70d7ff45; background: #071116aa; color: #9eeadd;
+    font: 8px var(--mono); cursor: pointer;
+  }
+  .estimate-grid {
+    display: grid; grid-template-columns: 1fr auto; gap: 3px 8px;
+    padding: 6px 7px; background: #0c0f13; border: 1px solid var(--line);
+    color: var(--dim); font-size: 9px;
+  }
+  .estimate-grid output { color: var(--ink); text-align: right; font-variant-numeric: tabular-nums; }
+  #multiviewGate {
+    padding: 7px; border: 1px solid var(--line); background: #0c0f13;
+    min-height: 68px; color: var(--dim); font-size: 9px;
+  }
+  #multiviewGate[data-ready="true"] { border-color: color-mix(in srgb, var(--ok) 55%, var(--line)); }
+  #multiviewGate strong { display: block; color: var(--ink); margin-bottom: 3px; }
+  #multiviewCapabilityDetail { display: block; min-height: 3.9em; }
+  #multiviewProgress {
+    height: 3px; margin: 7px 0 4px; overflow: hidden; background: var(--line);
+  }
+  #multiviewProgress i { display: block; width: 0; height: 100%; background: var(--ok); transition: width .18s ease; }
+  #multiviewStatus {
+    height: 2.8em; overflow: hidden; line-height: 1.4;
+    font-variant-numeric: tabular-nums; contain: layout paint;
+  }
+  #multiviewReview { margin-top: 7px; border: 1px solid var(--line); background: #080a0d; }
+  #multiviewReview[hidden] { display: none; }
+  #multiviewCanvas { width: 100%; height: auto; max-height: 150px; object-fit: contain; }
+  #multiviewReviewStatus { padding: 5px 7px; color: var(--dim); font-size: 9px; }
   [data-tip] { position: relative; }
   [data-tip]:hover::after, [data-tip]:focus-visible::after {
     content: attr(data-tip); position: absolute; z-index: 30;
@@ -230,18 +744,59 @@
   #projectionPip {
     position: fixed; right: 12px; bottom: 12px; width: clamp(240px, 28vw, 420px);
     z-index: 10;
-    overflow: hidden; pointer-events: none;
+    overflow: hidden; pointer-events: auto;
     background: color-mix(in srgb, var(--panel) 92%, transparent);
     border: 1px solid var(--line); border-radius: 4px;
     box-shadow: 0 12px 36px #0008;
     font-family: var(--mono); color: var(--ink);
+    transition: width .22s ease, box-shadow .22s ease;
   }
-  body[data-inspector="true"] #projectionPip { right: auto; left: 12px; }
+  #projectionPip[data-editor-open="true"] {
+    top: 50%; bottom: auto; left: clamp(12px, 3vw, 44px); right: auto;
+    width: min(820px, calc(100vw - 88px));
+    height: min(84vh, 740px); max-height: calc(100vh - 24px);
+    transform: translateY(-50%);
+    display: flex; flex-direction: column;
+    box-shadow: 0 18px 52px #000c, 0 0 28px #70d7ff18;
+  }
+  #projectionPip[data-editor-open="true"] > header { order: 0; flex: 0 0 auto; }
+  #projectionPip[data-editor-open="true"] #projectionMaskTools {
+    order: 1; flex: 0 0 auto; max-height: 31vh; overflow-y: auto;
+  }
+  #projectionPip[data-editor-open="true"] #projectionViewport {
+    order: 2; flex: 1 1 auto; min-height: 180px;
+  }
+  #projectionPip[data-editor-open="true"] > footer { order: 3; flex: 0 0 auto; }
+  body[data-inspector="true"] #projectionPip:not([data-editor-open="true"]) {
+    right: auto;
+    left: 292px;
+    width: min(420px, calc(100vw - 646px));
+  }
+  body[data-inspector="true"] #projectionPip[data-editor-open="true"] {
+    left: 292px;
+    width: min(820px, calc(100vw - 646px));
+  }
   #projectionPip header {
-    display: flex; justify-content: space-between; align-items: baseline;
+    display: flex; align-items: center; gap: 8px;
     padding: 7px 9px; border-bottom: 1px solid var(--line);
     font-size: 10px; letter-spacing: .04em;
   }
+  #projectionStatus {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .projection-header-actions {
+    display: flex; flex: 0 0 auto; gap: 4px; margin-left: auto;
+  }
+  #projectionEditorOpen,
+  #projectionEditorBack {
+    padding: 3px 6px;
+    border: 0; background: transparent; color: #9ddbd1;
+    font: 8px var(--mono); cursor: pointer;
+  }
+  #projectionEditorOpen:hover,
+  #projectionEditorBack:hover { color: #d8fff8; }
+  #projectionEditorOpen[hidden],
+  #projectionEditorBack[hidden] { display: none; }
   #projectionPip header b { font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
   #projectionStatus { color: var(--dim); font-variant-numeric: tabular-nums; }
   #projectionPip[data-stale="true"] #projectionStatus { color: var(--hot); }
@@ -252,7 +807,14 @@
       linear-gradient(45deg, transparent 75%, #11151a 75%) 0 0 / 12px 12px,
       #0a0c0f;
   }
-  #projectionCanvas { width: 100%; height: auto; }
+  #projectionCanvas {
+    width: 100%; height: clamp(150px, 30vh, 300px); object-fit: contain;
+    display: block; pointer-events: none;
+  }
+  #projectionPip[data-editor-open="true"] #projectionCanvas {
+    height: 100%;
+  }
+  #projectionCanvas[data-editing="true"] { pointer-events: auto; cursor: crosshair; }
   #projectionEmpty {
     position: absolute; color: var(--dim); font-size: 10px; letter-spacing: .04em;
   }
@@ -265,15 +827,79 @@
   }
   #projectionPip footer .mask { background: var(--hot); }
   #projectionPip footer .seed { background: var(--ok); }
+  #projectionMaskTools {
+    padding: 6px 8px 7px; border-top: 1px solid var(--line);
+    background: color-mix(in srgb, #080b0f 88%, transparent);
+  }
+  #projectionPip:not([data-editor-open="true"]) #projectionMaskTools { display: none; }
+  #projectionMaskTools[hidden] { display: none; }
+  #projectionMaskTools .mask-tools-head {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 8px; margin-bottom: 5px; color: #a9c0c0; font-size: 8px;
+    letter-spacing: .08em; text-transform: uppercase;
+  }
+  #projectionMaskTools .seg { flex: 1; }
+  #projectionMaskTools .seg button { padding: 4px 5px; font-size: 8px; }
+  #projectionMaskTools .row { margin: 5px 0 0; }
+  #projectionMaskTools .row button { padding: 4px 7px; font-size: 8px; }
+  #projectionMaskOptions { margin-top: 5px; }
+  #projectionMaskOptions summary {
+    color: var(--dim); cursor: pointer; font-size: 8px; list-style: none;
+  }
+  #projectionMaskOptions summary::-webkit-details-marker { display: none; }
+  #projectionMaskOptions summary::before { content: "+ "; color: var(--hot); }
+  #projectionMaskOptions[open] summary::before { content: "− "; }
+  #projectionMaskOptions label { margin-top: 5px; font-size: 8px; }
+  #projectionMaskOptions h4 {
+    margin: 7px 0 4px; color: #9eb5b6; font-size: 8px;
+    font-weight: 500; letter-spacing: .07em; text-transform: uppercase;
+  }
+  #projectionMaskOptions .note { margin-top: 4px; color: var(--dim); font-size: 8px; }
+  #projectionMaskTools .smart-fix {
+    display: grid; grid-template-columns: auto minmax(0, 1fr);
+    align-items: center; gap: 7px; margin-top: 5px;
+  }
+  #projectionMaskTools .smart-fix > span {
+    color: #b6cccd; font-size: 8px; white-space: nowrap;
+  }
 
   @media (max-width: 640px) {
+    #buildNotice {
+      top: 5px; width: calc(100vw - 10px); min-width: 0;
+    }
     #projectionPip { width: min(46vw, 280px); }
     #selectionProps { top: auto; right: 8px; bottom: 8px; width: min(310px, calc(100vw - 16px)); }
     #projectionPip { display: none; }
+    #objectPreviewHud {
+      top: 8px; left: 8px; right: 8px; width: auto;
+    }
+    #objectPreviewViewport { height: 180px; }
   }
 </style>
 </head>
-<body>
+<body data-exploration="false" data-viewfinder-locked="false">
+  <aside id="buildNotice" data-collapsed="true" aria-live="polite" aria-label="Build update">
+    <div id="buildNoticeSummary">
+      <div id="buildNoticeText"></div>
+      <div id="buildNoticeActions">
+        <button id="buildNoticeReload" type="button" hidden>Reload</button>
+        <button id="buildNoticeToggle" type="button" aria-expanded="false" aria-controls="buildNoticeDetails"
+          title="Show build notes">+</button>
+      </div>
+    </div>
+    <div id="buildNoticeDetails" hidden>
+      <ul id="buildNoticeNotes"></ul>
+      <div id="buildNoticeMeta"></div>
+    </div>
+  </aside>
+  <button id="exploreExitHud" type="button"
+    data-tip="Freeze this camera view, prepare object hints, and enter selection mode">
+    <b>Select objects</b>
+    <span id="exploreExitDetail">freeze this view and scan</span>
+    <kbd>Tab</kbd>
+  </button>
+  <div id="viewfinderCue">Click the scene to control the viewfinder</div>
+  <canvas id="objectHintHud" aria-hidden="true"></canvas>
   <div id="drop">drop a .ply / .ksplat / .splat / .spz file anywhere</div>
   <div id="encodingCue" hidden role="status" aria-live="polite" data-state="encoding">
     <b id="encodingCueTitle">Encoding selection view</b>
@@ -282,14 +908,56 @@
   <div id="encodingCursor" aria-hidden="true"><span id="encodingCursorLabel">encoding</span></div>
   <canvas id="selectionOutline" hidden aria-hidden="true"></canvas>
   <div id="brushCursor" aria-hidden="true"></div>
+  <div id="detectorSuggestionLabel" aria-hidden="true">
+    <b id="detectorSuggestionName">object</b>
+    <span id="detectorSuggestionScore"></span>
+    · click to segment
+  </div>
+  <section id="scanTray" hidden aria-label="All-sides object scan">
+    <header>
+      <b>All-sides scan</b>
+      <span data-scan-status>Generating views · 0 / 0</span>
+    </header>
+    <div class="scan-tray-track" data-scan-track></div>
+  </section>
 
   <div id="ui">
-    <header><b>splat-seg</b><span id="status">loading model…</span></header>
+    <header>
+      <b>splat-seg</b><span id="status">loading model…</span>
+      <span id="gpuAdapter" title="WebGL graphics adapter">GPU · checking…</span>
+    </header>
     <div id="bar" hidden><i></i></div>
 
     <section>
-      <div id="hint">Click an object or region. The best automatic mask appears first; refine it only when needed. <kbd>Shift</kbd>+click removes.<br>
-        Fly with <kbd>W</kbd>/<kbd>S</kbd> forward/back, <kbd>A</kbd>/<kbd>D</kbd> strafe, <kbd>Q</kbd>/<kbd>E</kbd> turn left/right, <kbd>Ctrl</kbd>/<kbd>Space</kbd> down/up, <kbd>Shift</kbd> to sprint.</div>
+      <div id="hint">Click an object to select it. <kbd>Shift</kbd>+click removes. <kbd>Tab</kbd> switches modes.</div>
+    </section>
+
+    <section id="explorationControls">
+      <h3 class="rail-label">Mode and camera</h3>
+      <div id="modeToggle" class="seg" aria-label="Interaction mode">
+        <button id="viewfinderMode" aria-pressed="false"
+          data-tip="Fly and aim with first-person mouse look; selection processing stays paused">Viewfinder</button>
+        <button id="selectionMode" aria-pressed="true"
+          data-tip="Freeze the current camera view and use object-selection tools">Selection</button>
+      </div>
+      <div class="row">
+        <button id="homeView"
+          data-tip="Return to your saved home camera">Home</button>
+        <button id="frameScene"
+          data-tip="Frame the robust centre of the scene and ignore distant outlier splats">Frame scene</button>
+      </div>
+      <div class="row">
+        <button id="setHomeView"
+          data-tip="Use the current camera as Home">Set home</button>
+        <button id="qualityFilterToggle" aria-pressed="false" hidden
+          data-tip="Temporarily hide abnormally oversized reconstruction splats; no scene data is deleted">Clean view</button>
+        <button id="originToggle" aria-pressed="false"
+          data-tip="Show the raw PLY world origin and XYZ axes">Show origin</button>
+      </div>
+      <label id="exploreSpeedRow">flight speed
+        <input id="exploreSpeed" type="range" min="0.15" max="3" step="0.05" value="1">
+        <span id="exploreSpeedValue">1.0×</span>
+      </label>
     </section>
 
     <section id="workPanel" data-state="idle" aria-live="polite" aria-atomic="true">
@@ -300,121 +968,307 @@
       </div>
       <div id="workDetail">Drop a splat file to begin.</div>
       <div id="workSteps" hidden></div>
+      <div id="workJobs" hidden></div>
     </section>
 
-    <section>
+    <section id="selectionControls">
+      <h3 class="rail-label">Targeting mode</h3>
+      <div class="seg method" id="selectionMethod" role="group" aria-label="Selection method"></div>
+      <div class="note" id="targetingMethodHint">Automatic object uses the target scanner and a click to find a visible object.</div>
+      <div class="row targeting-actions">
+        <button id="suggestionsToggle" aria-pressed="true"
+          data-tip="Show object target hints before clicking">Target scanner</button>
+        <button id="openSelectionSetup" aria-expanded="false"
+          data-tip="Show the few controls for the selected targeting mode">Targeting options</button>
+      </div>
+      <div id="preselectionOptions" hidden>
+        <div id="autoProps">
+          <div class="note"><strong>Automatic object</strong> makes a quick visible mask, then checks hidden sides with SAM 3 automatically.</div>
+          <div class="seg" id="modelQuality" hidden aria-hidden="true"></div>
+        </div>
+        <div id="fillProps" hidden>
+          <label>color tolerance <span class="v" id="fillThresholdV">18</span>
+            <input id="fillThreshold" type="range" min="0" max="100" value="18"
+              aria-label="Color fill threshold" data-tip="Higher values cross larger color differences" /></label>
+        </div>
+        <div id="radiusProps" hidden>
+          <label>area size <span class="v" id="screenRadiusV">5.0%</span>
+            <input id="screenRadius" type="range" min="1" max="30" value="5" step="0.5"
+              aria-label="Screen selection radius" data-tip="Area size as a percentage of the shorter view dimension" /></label>
+        </div>
+        <div id="fusionProps" hidden>
+          <h3>Combined targeting</h3>
+          <div class="seg" id="fusionMode" role="group" aria-label="Mask combination">
+            <button data-fusion="smart" aria-pressed="true"
+              data-tip="Keep the automatic object as the shape and use classic cues as guidance">Automatic shape</button>
+            <button data-fusion="union" aria-pressed="false"
+              data-tip="Include every pixel selected by any enabled method">Add all</button>
+            <button data-fusion="intersection" aria-pressed="false"
+              data-tip="Keep only pixels selected by every enabled method">Overlap only</button>
+          </div>
+        </div>
+        <div class="note">Shift+click a targeting mode to combine it with the current one.</div>
+      </div>
+
+      <h3 class="rail-label">Selection and output</h3>
       <label>selected <span class="v" id="count">0</span></label>
-      <label>total splats <span class="v" id="total">—</span></label>
+      <label>scene points <span class="v" id="total">—</span></label>
       <div class="row">
-        <button id="clear" data-tip="Clear every selected splat">Clear</button>
-        <button id="isolate" aria-pressed="false" data-tip="Hide the source cloud and show only the selection overlay">Selection only</button>
-        <button id="export" data-tip="Download selected splat indices as a binary Int32 array">Export ids</button>
+        <button id="clear" data-tip="Clear the current object selection">Clear</button>
+        <button id="export" data-tip="Download the selected point indices for another tool">Export selection</button>
       </div>
     </section>
   </div>
 
+  <aside id="objectPreviewHud" hidden aria-label="Selected object 3D preview">
+    <header>
+      <b data-tip="An isolated 3D preview of the object found so far; scan all sides to check hidden surfaces">3D object</b>
+      <span id="objectPreviewStatus">nothing selected</span>
+    </header>
+    <div id="objectPreviewViewport">
+      <canvas id="objectPreviewCanvas" aria-label="Rotating local 3D cutaway of the selected object"
+        data-tip="Hover to pause · drag to rotate · click a surface to view that side in the main scene"></canvas>
+      <span id="objectPreviewEmpty">select an object to inspect it</span>
+    </div>
+    <footer>
+      <div id="objectPreviewLegend">
+        <span id="previewLegendStrong" hidden
+          data-tip="Included in the object and strongly supported by the evidence available so far"><i class="confirmed"></i>included · strong</span>
+        <span id="previewLegendReview" hidden
+          data-tip="Still included in the object; this area simply has weaker evidence or too few views"><i class="provisional"></i>included · low evidence</span>
+        <span id="previewLegendProtected" hidden
+          data-tip="You protected these points; cleanup and later scans cannot remove them"><i class="locked"></i>protected</span>
+        <span id="previewLegendNew" hidden
+          data-tip="Added or refined by the control change or scan that just completed; this blue cue settles into place and fades"><i class="new"></i>new this change</span>
+        <span id="previewLegendRemoved" hidden
+          data-tip="Removed by the latest change; these gray splats lift away before disappearing"><i class="removed"></i>leaving this change</span>
+      </div>
+      <div class="preview-actions">
+        <button id="previewSpin" aria-pressed="true" data-tip="Pause or resume automatic rotation">Spin</button>
+        <button id="previewReset" data-tip="Reset the hologram rotation">Reset view</button>
+        <button id="previewOrbit" aria-pressed="false"
+          data-tip="Center the main camera controls on this object">Orbit object</button>
+        <button id="previewNearby" aria-pressed="false"
+          data-tip="Keep this object and nearby context visible while hiding the distant scene">Focus view</button>
+        <button id="previewCleanup" data-danger aria-pressed="false"
+          data-tip="Brush unwanted 3D Gaussians out of the hologram">Remove stray splats</button>
+        <button id="previewCleanupUndo" hidden data-tip="Restore the last removed 3D splats">Undo removal</button>
+        <button id="previewScan" hidden>Scan all sides</button>
+        <button id="previewEdit" data-tip="Open selection progress, finish controls, and optional details">Details</button>
+      </div>
+    </footer>
+  </aside>
+
+  <aside id="changeDiffHud" hidden aria-live="polite" aria-atomic="true">
+    <b id="changeDiffTitle">Last change</b>
+    <div id="changeDiffStats"></div>
+    <span id="changeDiffDetail"></span>
+  </aside>
+
   <aside id="selectionProps" hidden aria-label="Selection properties">
     <header>
-      <div><b>Selection preview</b> <span id="selectionResult">0 splats</span></div>
+      <div><b>Object selection</b> <span id="selectionResult">nothing selected</span></div>
       <button id="closeProps" aria-label="Close selection properties" data-tip="Keep the selection and close this inspector">×</button>
     </header>
 
-    <section>
-      <h3>1 · Starting mask</h3>
-      <div class="seg method" id="selectionMethod" role="group" aria-label="Selection method"></div>
-      <div class="note">Enable more than one source to combine their evidence.</div>
-    </section>
-
-    <section id="autoProps">
-      <h3>Auto object settings</h3>
-      <div class="seg" id="modelQuality" role="group" aria-label="Automatic segmentation model"></div>
-      <h3>Mask hypothesis</h3>
-      <div class="seg" id="extent" role="group" aria-label="Automatic mask extent">
-        <button data-extent="tight" aria-pressed="false" data-tip="The smallest valid mask returned by SAM">Tight</button>
-        <button data-extent="suggested" aria-pressed="true" data-tip="The mask with SAM's highest predicted quality">Suggested</button>
-        <button data-extent="broad" aria-pressed="false" data-tip="The largest valid mask returned by SAM">Broad</button>
-      </div>
-      <div class="note"><strong>Ctrl/Cmd+click</strong> adds a keep point. <strong>Alt+click</strong> adds an exclusion point to refine the active auto mask.</div>
-    </section>
-
-    <section id="fillProps" hidden>
-      <h3>Color fill settings</h3>
-      <label>threshold <span class="v" id="fillThresholdV">18</span>
-        <input id="fillThreshold" type="range" min="0" max="100" value="18"
-          aria-label="Color fill threshold" data-tip="Higher values cross larger color differences" /></label>
-    </section>
-
-    <section id="radiusProps" hidden>
-      <h3>Radius settings</h3>
-      <label>size <span class="v" id="screenRadiusV">5.0%</span>
-        <input id="screenRadius" type="range" min="1" max="30" value="5" step="0.5"
-          aria-label="Screen selection radius" data-tip="Radius as a percentage of the shorter view dimension" /></label>
-    </section>
-
-    <section id="fusionProps" hidden>
-      <h3>2 · Combine starting masks</h3>
-      <div class="seg" id="fusionMode" role="group" aria-label="Mask combination">
-        <button data-fusion="smart" aria-pressed="true"
-          data-tip="Keep pixels supported by a majority of enabled sources">Consensus</button>
-        <button data-fusion="union" aria-pressed="false"
-          data-tip="Keep pixels selected by any enabled source">Union</button>
-        <button data-fusion="intersection" aria-pressed="false"
-          data-tip="Keep only pixels selected by every enabled source">Common</button>
-      </div>
-    </section>
-
-    <section>
-      <h3>3 · Edit border</h3>
-      <div class="seg" id="borderMode" role="group" aria-label="Border editing mode">
-        <button data-edit="off" aria-pressed="true" data-tip="Navigate and select normally">Off</button>
-        <button data-edit="add" aria-pressed="false" data-tip="Paint pixels into the selection">Add</button>
-        <button data-edit="remove" aria-pressed="false" data-tip="Paint pixels out of the selection">Remove</button>
-      </div>
-      <label>brush size <span class="v" id="edgeBrushV">2.0%</span>
-        <input id="edgeBrush" type="range" min="0.3" max="12" value="2" step="0.1"
-          aria-label="Border editing brush size" data-tip="Brush diameter as a percentage of the shorter view dimension" /></label>
+    <section id="visibleSelectionStep">
+      <h3>1 · Select the visible side</h3>
+      <div class="note"><strong>Fast + object hints</strong> finds what this camera can see. If its outline is wrong, correct the image mask before hidden sides are filled.</div>
       <div class="row">
-        <button id="undoStroke" data-tip="Undo the most recent border stroke">Undo stroke</button>
-        <button id="resetBorder" data-tip="Remove all manual border edits from this preview">Reset edits</button>
+        <button id="open2dMaskEditor" data-tip="Open the enlarged image mask and correct its silhouette" disabled>Open 2D mask editor</button>
       </div>
-      <div class="note"><kbd>B</kbd> add · <kbd>X</kbd> swap add/remove · <kbd>Alt</kbd> temporarily inverts the brush · <kbd>Ctrl/Cmd</kbd>+<kbd>Z</kbd> undo</div>
     </section>
 
-    <section>
-      <h3>4 · Complete into 3D</h3>
-      <label>surface tolerance <span class="v" id="slackV">0.6%</span>
-        <input id="slack" type="range" min="1" max="60" value="6"
-          aria-label="Surface depth tolerance" data-tip="How far behind the visible surface a splat can be and still seed the selection" /></label>
-      <label>neighbor radius <span class="v" id="radiusV">0.8%</span>
-        <input id="radius" type="range" min="0" max="40" value="8"
-          aria-label="3D neighbor radius" data-tip="Maximum distance for growing from one selected splat to a neighbor" /></label>
-      <label>grow passes <span class="v" id="stepsV">24</span>
-        <input id="steps" type="range" min="0" max="80" value="24"
-          aria-label="3D grow passes" data-tip="More passes reach farther through the object; fewer passes reduce leakage" /></label>
-      <div id="selectionMeta">waiting for mask</div>
+    <!-- Kept as implementation defaults, not user-facing workflow knobs.
+         The visible-side lift is local; SAM 3 owns hidden-surface discovery. -->
+    <div id="advancedWorkflow" hidden>
+      <input id="slack" type="range" min="1" max="60" value="6" />
+      <span id="slackV">0.6%</span>
+      <input id="radius" type="range" min="0" max="40" value="8" />
+      <span id="radiusV">0.8%</span>
+      <input id="steps" type="range" min="0" max="24" value="3" />
+      <span id="stepsV">3</span>
+      <input id="minimumConfidence" type="range" min="0" max="95" value="34" />
+      <span id="minimumConfidenceV">Balanced · 34%</span>
+      <input id="confirmConfidence" type="range" min="20" max="100" value="72" />
+      <span id="confirmConfidenceV">72%</span>
+      <input id="boundarySoftness" type="range" min="0" max="18" value="4" />
+      <span id="boundarySoftnessV">4 px</span>
+      <input id="selectionOpacity" type="range" min="10" max="100" value="90" />
+      <span id="selectionOpacityV">90%</span>
+      <input id="nearbyRadius" type="range" min="0" max="30" value="0" />
+      <span id="nearbyRadiusV">off</span>
+      <button id="removeDisconnected" aria-pressed="false">Remove stray specks</button>
+      <label id="componentSizeRow" hidden>
+        <input id="componentSize" type="range" min="2" max="500" value="24" />
+        <span id="componentSizeV">24</span>
+      </label>
+      <button id="lockConfirmed">Protect</button>
+      <button id="unlockAll">Unprotect</button>
+      <button id="undoRefinement">Undo</button>
+      <div id="selectionMeta">Waiting for the object…</div>
+    </div>
+
+    <section id="multiviewSection">
+      <h3>2 · Fill hidden sides</h3>
+      <div id="multiviewGate" data-ready="false">
+        <strong id="multiviewCapability">Select an object to scan around it</strong>
+        <span id="multiviewCapabilityDetail">The scan creates additional viewpoints, checks the mask from each side, and marks uncertain additions for review.</span>
+      </div>
+      <div id="multiviewControls" hidden>
+        <div class="row">
+          <button id="startMultiview" hidden>Scan all sides</button>
+          <button id="pauseMultiview" hidden disabled>Pause</button>
+          <button id="cancelMultiview" hidden disabled>Stop</button>
+        </div>
+        <div class="estimate-grid" aria-label="Multiview time estimate">
+          <span>Computer time</span><output id="automaticEstimate">—</output>
+          <span>Your review</span><output id="reviewEstimate">—</output>
+          <span>Expected total</span><output id="totalEstimate">—</output>
+        </div>
+        <div id="multiviewProgress"><i></i></div>
+        <div id="multiviewStatus">Ready to track new angles without moving your view.</div>
+        <details class="inspector-step">
+          <summary>Tracking settings <span>optional</span></summary>
+          <div class="step-body">
+            <label>angles to check <span class="v" id="multiviewCountV">8</span>
+              <input id="multiviewCount" type="range" min="2" max="24" value="8"
+                aria-label="Number of angles to scan" /></label>
+            <label>views needed to trust a new part <span class="v" id="multiviewSupportV">2</span>
+              <input id="multiviewSupport" type="range" min="1" max="8" value="2"
+                aria-label="Minimum supporting views" /></label>
+            <label>agreement needed <span class="v" id="multiviewConfidenceV">64%</span>
+              <input id="multiviewConfidence" type="range" min="20" max="95" value="64"
+                aria-label="Required agreement between angles" /></label>
+            <div class="note">These settings affect the next tracked scan, not the current object.</div>
+          </div>
+        </details>
+        <div id="multiviewReview" hidden>
+          <canvas id="multiviewCanvas"></canvas>
+          <div id="multiviewReviewStatus">Review this proposed mask.</div>
+          <div class="row">
+            <button id="rejectMultiview">Skip angle</button>
+            <button id="acceptMultiview">Use this mask</button>
+          </div>
+        </div>
+        <div class="note">Blocked angles are skipped. Only masks tracked through the intact scene contribute to the automatic result.</div>
+      </div>
     </section>
 
-    <section>
-      <h3>5 · Confirm</h3>
+    <section id="gaussianCleanupStep">
+      <h3>3 · Clean selected 3D splats</h3>
+      <div class="note">Only if needed: brush stray particles directly from the floating hologram. This edits Gaussians, not image pixels.</div>
+      <div class="row">
+        <button id="startHologramCleanup" aria-pressed="false" disabled
+          data-tip="Turn on the removal brush in the floating 3D object">Open 3D cleanup brush</button>
+      </div>
+    </section>
+
+    <details id="recursiveRefineStep" class="inspector-step">
+      <summary>Refine inside this object <span>optional</span></summary>
+      <div class="step-body">
+        <div class="note">Temporarily show only this object, then run the same selection flow inside it. A breadcrumb keeps your place.</div>
+        <button id="previewRefineInside"
+          data-tip="Isolate this object and select a more precise part inside it">Isolate and select a smaller part</button>
+      </div>
+    </details>
+
+    <section id="finishSelectionStep">
+      <h3>4 · Dock the object</h3>
+      <div class="note">Every splat visible in the hologram is already included. Evidence colors never block docking.</div>
       <div class="row commit">
-        <button id="undoPreview" data-tip="Restore the selection exactly as it was before this click">Undo preview</button>
-        <button id="keepPreview" data-tip="Keep this result and return to one-click selection">Keep result</button>
+        <button id="undoPreview" data-tip="Step back through object-selection clicks; Esc does the same" disabled>Undo selection</button>
+        <button id="keepPreview" data-tip="Remove every splat in the hologram from the scene and store it as a live miniature" disabled>Dock this object</button>
       </div>
     </section>
   </aside>
 
+  <aside id="focusRefineHud" hidden>
+    <b id="focusRefinePath">Scene › isolated object</b>
+    <span id="focusRefineDetail">Only the parent object is visible. Select the precise part you want to keep.</span>
+    <button id="focusRefineBack" data-tip="Restore the previous object exactly as it was">Back one level</button>
+  </aside>
+
   <aside id="projectionPip" data-stale="true" aria-label="Frozen 2D projection preview">
-    <header><b>2D projection</b><span id="projectionStatus">waiting for scene</span></header>
+    <header>
+      <b>2D mask</b>
+      <span id="projectionStatus">waiting for scene</span>
+      <span class="projection-header-actions">
+        <button id="projectionEditorOpen" hidden
+          data-tip="Open the larger 2D mask workspace">Edit mask</button>
+        <button id="projectionEditorBack" hidden
+          data-tip="Minimize the 2D mask workspace without discarding edits">← Back to scene</button>
+      </span>
+    </header>
     <div id="projectionViewport">
       <canvas id="projectionCanvas"></canvas>
       <span id="projectionEmpty">no encoded view yet</span>
     </div>
     <footer>
       <span><i class="mask"></i>2D mask</span>
-      <span><i class="seed"></i>visible splats</span>
+      <span id="projectionSeedLegend" hidden
+        data-tip="Diagnostic only: front-surface Gaussian centers used to start the 3D selection"><i class="seed"></i>3D seed origins</span>
     </footer>
+    <div id="projectionMaskTools" hidden>
+      <div class="mask-tools-head">
+        <span>Edit the 2D mask</span>
+        <div class="seg" id="borderMode" role="group" aria-label="2D mask editing mode">
+          <button data-edit="off" aria-pressed="true" data-tip="Inspect the projection without painting">View</button>
+          <button data-edit="add" aria-pressed="false" data-tip="Paint pixels into the 2D mask">Brush add</button>
+          <button data-edit="remove" aria-pressed="false" data-tip="Paint pixels out of the 2D mask">Brush erase</button>
+        </div>
+      </div>
+      <div class="smart-fix">
+        <span>Missing an area?</span>
+        <div class="seg" id="samPointMode" role="group" aria-label="SAM point prompt mode">
+          <button data-edit="positive" aria-pressed="false"
+            data-tip="Click a missing object area; SAM redraws the mask to include it">Keep point</button>
+          <button data-edit="negative" aria-pressed="false"
+            data-tip="Click an unwanted area; SAM redraws the mask to exclude it">Exclude point</button>
+        </div>
+      </div>
+      <div class="row">
+        <button id="undoStroke" data-tip="Undo the most recent 2D mask stroke">Undo mask</button>
+        <button id="resetBorder" data-tip="Remove all manual edits from this 2D mask">Reset mask</button>
+      </div>
+      <details id="projectionMaskOptions">
+        <summary>More 2D editing tools</summary>
+        <h4>Which shape did you mean?</h4>
+        <div class="seg" id="extent" role="group" aria-label="Automatic mask shape">
+          <button data-extent="tight" aria-pressed="false"
+            data-tip="Use SAM's smallest plausible mask for this click">Small part</button>
+          <button data-extent="suggested" aria-pressed="true"
+            data-tip="Use SAM's most likely whole-object mask">Whole object</button>
+          <button data-extent="broad" aria-pressed="false"
+            data-tip="Use SAM's largest plausible connected mask">Wider area</button>
+        </div>
+        <div class="note">These are alternate masks from the same click. They do not change image resolution.</div>
+        <h4>Point-to-point outline</h4>
+        <div class="seg" id="polygonMode" role="group" aria-label="Polygon mask editing mode">
+          <button data-edit="polygon-add" aria-pressed="false"
+            data-tip="Click around an area, then Finish outline, to add it to the mask">Add outline</button>
+          <button data-edit="polygon-remove" aria-pressed="false"
+            data-tip="Click around an area, then Finish outline, to cut it from the mask">Cut outline</button>
+        </div>
+        <div class="row">
+          <button id="finishPolygon" disabled data-tip="Close and apply the current point-to-point outline">Finish outline</button>
+          <button id="cancelPolygon" disabled data-tip="Discard the current point-to-point outline">Cancel outline</button>
+        </div>
+        <div class="note">Keep/exclude points ask SAM to reconsider the object. Brush and outline tools directly edit the resulting mask.</div>
+        <h4>Brush and edge</h4>
+        <label>brush size <span class="v" id="edgeBrushV">2.0%</span>
+          <input id="edgeBrush" type="range" min="0.3" max="12" value="2" step="0.1"
+            aria-label="2D mask brush size" data-tip="Brush diameter as a percentage of this projection" /></label>
+        <label>move the whole edge <span class="v" id="maskOffsetV">no change</span>
+          <input id="maskOffset" type="range" min="-12" max="12" value="0"
+            aria-label="Move the whole 2D mask edge" data-tip="Move left to shrink the mask or right to expand it" /></label>
+        <h4>Diagnostics</h4>
+        <button id="projectionSeedsToggle" class="toggle" aria-pressed="false"
+          data-tip="Show the Gaussian centers used to lift this pixel mask into 3D; these are not the mask itself">Show 3D seed origins</button>
+      </details>
+    </div>
   </aside>
 
-  <script type="module" src="/main.js"></script>
+  <script type="module" src="/bootstrap.js"></script>
 </body>
 </html>
