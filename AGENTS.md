@@ -345,6 +345,13 @@ they do not become interchangeable confidence numbers.
 
 ## Multi-agent workflow
 
+- No subagent is exempt from the launch gate, including read-only scanners,
+  reviewers, auditors, and research agents. Root publishes the exact job,
+  confirms it queued, claims it through the private wrapper, confirms the
+  expected visible lease, and only then spawns or prompts the agent. A root
+  umbrella lease never authorizes unleased child work, and leases are never
+  reconstructed after launch.
+
 - At the start of a new root orchestration task, read this file and
   `ORCHESTRATION_HANDOFF.md`, inspect Git status/worktrees, run the local
   orchestration `summary` and `inbox`, and compare the generated export with
@@ -629,6 +636,13 @@ Keep review text untruncated and copyable so the user can send it back to the
 orchestrator. The root routes every `ISSUE` comment to the item's owning agent
 and publishes the resulting follow-up question in the next independently
 reviewed tranche.
+
+The in-product banner is an orchestration inbox, not browser-local evidence.
+It presents `Looks good` and `Back to loop`; the latter requires a comment.
+Import each decision durably into the ledger/board before clearing it from the
+active banner. Only explicit `Looks good` may become `user_verified`; route
+`Back to loop` plus its note to the stable owning task and retain it in history.
+If that import bridge is unavailable, fail visibly and keep the item pending.
 
 ## Git and documentation hygiene
 

@@ -1,4 +1,4 @@
-# GaussianEdit cleanup orchestration kickoff
+# GaussianEdit development orchestration kickoff
 
 Start a new Codex task from the GaussianEdit project and paste the prompt below.
 
@@ -6,8 +6,14 @@ Start a new Codex task from the GaussianEdit project and paste the prompt below.
 Use $orchestrate-development and the installed GaussianEdit Orchestration
 plugin. Act as the root orchestrator for this repository and reconcile the
 current messy development state into truthful, reviewable, clean Git and board
-state. Continue until the cleanup contract below is satisfied; do not merely
-write a plan.
+state, then immediately resume the highest-priority unfinished product work.
+Continue until the contract below is satisfied; do not merely write a plan or
+keep refining the board after it is operational.
+
+Read the MCP development-framework current pointer and its immutable bundle
+before claiming work. Verify its source commit and digest. If the pointer is
+missing, stale, or inconsistent with the pushed repository contract, fail
+closed and report that single blocker instead of improvising workflow rules.
 
 First read AGENTS.md, ORCHESTRATION_HANDOFF.md, PRODUCT_VISION.md, UI_MODEL.md,
 IMPLEMENTATION_TASKS.md, and FUSION_ARCHITECTURE.md. Inspect the canonical
@@ -15,10 +21,15 @@ branch, every worktree, every changed/untracked file, recent commits, upstreams,
 the local orchestration summary/inbox/export, and the authenticated production
 board. Do not open or control any browser or start development services.
 
-Use inexpensive Luna agents for independent read-only scans of: (1) product
+Use inexpensive Luna agents when available, otherwise the cheapest available
+worker model, for independent read-only scans of: (1) product
 WIP and test coverage, (2) Git/worktree provenance and duplicate changes, and
-(3) orchestration/board/cloud-handoff consistency. Scanning grants no ownership
-or completion authority. Reconcile their evidence yourself.
+(3) orchestration/board/cloud-handoff consistency. Scanning grants no completion
+authority. Every scan, review, research, or implementation subagent still
+requires the hard launch gate: publish the exact job, confirm it queued, claim
+through the private wrapper, confirm the visible unexpired lease, and only then
+spawn the agent. Reconcile their evidence yourself. Never reconstruct a lease
+after spawning.
 
 Preserve all user and agent work. Do not reset, discard, delete, rebase,
 force-push, or blindly cherry-pick. Mark already-incorporated branches and
@@ -34,6 +45,18 @@ tranche. Commit intentionally to staging, push the exact reviewed
 candidate, and publish a candidate banner only if the required gates and
 independent review pass. Acceptance-testing items remain explicitly pending
 until the user verifies them; do not call shell success visual proof.
+
+Human verification happens only on a named candidate built from staging. Turn
+each integrated tranche's short falsifiable review questions into separate
+in-product banner items with stable item ID, task ID, owning agent, and
+workspace. The banner offers `Looks good` and `Back to loop`; the latter
+requires a comment and the former may include one. Import banner decisions into
+the orchestration ledger and board. Record `user_verified` only from an explicit
+`Looks good`. Route every `Back to loop` comment to the owning task as new work,
+preserve it in history, and clear the item from the active banner only after the
+decision has been imported successfully. If the banner-to-board bridge is not
+implemented, publish and complete that bounded bridge as the first workflow
+task; never pretend browser-local state is visible to cloud orchestration.
 
 Use cloud dispatch only for genuinely unfinished work preserved at a clean,
 pushed immutable handoff commit. The scheduled dispatcher may claim at most one
@@ -70,6 +93,12 @@ Completion requires evidence for every item below:
 8. Every genuinely unfinished job is either remote-ready on its own verified
    handoff ref or explicitly local-only and blocked; none is stranded merely
    because its former owner or the laptop stopped.
+9. At least one real unfinished product job is published on its existing stable
+   task ID and can be safely claimed locally or dispatched from an immutable
+   handoff. If no product work remains, prove that against IMPLEMENTATION_TASKS
+   and the named candidate instead of inventing a job.
+10. Candidate banner decisions are durably importable into the board and route
+    `Back to loop` comments without silently marking work verified.
 
 Return the exact final commit, upstream comparison, clean status for every
 worktree, test results, board cursor, remaining Edge questions, and any
