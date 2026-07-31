@@ -9,7 +9,7 @@ Suggested task name: `GaussianEdit cloud dispatcher`
 Suggested plugin description:
 
 > Private GaussianEdit development board and lease coordinator. It reads the
-> authenticated orchestration status, atomically claims one authorized
+> authenticated orchestration status and immutable agent framework, atomically claims one authorized
 > immutable cloud handoff, records cloud-dispatch results, and lets the
 > launched worker claim and renew its bounded work lease. It cannot merge,
 > publish product code, verify Edge behavior, or access dirty local files.
@@ -20,6 +20,12 @@ Scheduled-task prompt:
 Use the installed GaussianEdit Orchestration plugin and its
 $dispatch-cloud-work skill. Run one fail-closed dispatch cycle for
 jKaarlehto/gaussianedit.
+
+First read the current development-framework pointer and its immutable MCP
+resource (or the plugin's read-only compatibility action). Verify the source
+commit, bundle digest, and freshness. Use that exact framework for this run.
+If it is missing, stale, inconsistent, or cannot be authenticated, launch
+nothing and report one concise reason.
 
 Read the authenticated machine status through the plugin only. Do not scrape
 dashboard HTML, access a local checkout, infer missing context, or ask me for
