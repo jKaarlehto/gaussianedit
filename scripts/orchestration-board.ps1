@@ -204,10 +204,13 @@ function Invoke-BoardRequest {
     [Parameter(Mandatory)][string]$RouteName,
     [object]$Body
   )
+  $baseUrl = (Get-ConfiguredValue "GAUSSIANEDIT_ORCHESTRATION_BASE_URL").TrimEnd('/')
   $headers = @{
-    "OAI-Sites-Authorization" = "Bearer $(Get-ConfiguredValue 'GAUSSIANEDIT_SITES_BYPASS_TOKEN')"
     "Authorization" = "Bearer $(Get-ConfiguredValue 'GAUSSIANEDIT_ORCHESTRATION_API_TOKEN')"
     "Accept" = "application/json"
+  }
+  if ([Uri]$baseUrl -and ([Uri]$baseUrl).Host -eq "gaussianedit-orchestration.juhana-kaa.chatgpt.site") {
+    $headers["OAI-Sites-Authorization"] = "Bearer $(Get-ConfiguredValue 'GAUSSIANEDIT_SITES_BYPASS_TOKEN')"
   }
   $arguments = @{
     Uri = Resolve-BoardUri $RouteName
