@@ -10,7 +10,6 @@ const pluginManifest = JSON.parse(fs.readFileSync(new URL('../.agents/plugins/pl
 const pluginApp = JSON.parse(fs.readFileSync(new URL('../.agents/plugins/plugins/gaussianedit-orchestration/.app.json', import.meta.url), 'utf8'));
 const marketplace = JSON.parse(fs.readFileSync(new URL('../.agents/plugins/marketplace.json', import.meta.url), 'utf8'));
 const dispatchSkill = fs.readFileSync(new URL('../.agents/plugins/plugins/gaussianedit-orchestration/skills/dispatch-cloud-work/SKILL.md', import.meta.url), 'utf8');
-const frameworkExport = fs.readFileSync(new URL('./export-orchestration-framework.mjs', import.meta.url), 'utf8');
 
 for (const route of [
   'status',
@@ -84,10 +83,9 @@ assert.match(scheduledPrompt, /Do not claim or promise a live local worker lease
 assert.match(kickoffPrompt, /npm run dev/);
 assert.match(kickoffPrompt, /Microsoft Edge/);
 assert.match(kickoffPrompt, /do not default them to Luna or\s+the cheapest model/);
-assert.match(agentGuide, /\.agents\/plugins\/plugins\/gaussianedit-orchestration\//);
-assert.match(agentGuide, /Worker leases default to five minutes/);
-assert.match(frameworkExport, /dispatch-plugin-manifest/);
-assert.match(frameworkExport, /dispatch-plugin-app/);
-assert.match(frameworkExport, /dispatch-skill/);
+assert.match(agentGuide, /get_development_framework/);
+assert.match(agentGuide, /orchestration_status/);
+assert.match(agentGuide, /gaussianedit-orchestration-framework/);
+assert.match(agentGuide, /Only one agent may own `main\.js`/);
 
 console.log('orchestration board wrapper contract: pass');
