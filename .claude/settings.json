@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "defaultMode": "default",
+    "deny": [
+      "Read(.codex/orchestration/secrets/**)",
+      "Read(.env)",
+      "Read(.env.*)"
+    ]
+  }
+}

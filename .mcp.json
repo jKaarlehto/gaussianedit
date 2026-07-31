@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "gaussianedit-orchestration": {
+      "type": "http",
+      "url": "https://gaussianedit-orchestration-connector.juhana-kaa.chatgpt.site/api/mcp"
+    }
+  }
+}
