@@ -116,6 +116,11 @@ import {
   viewMatricesMatch,
 } from './selectionFrame.js';
 import { positionRetargetHud } from './retargetHud.js';
+import {
+  createPipelineProfiler,
+  pipelineProfilerDiagnosticEnabled,
+  PIPELINE_STAGES,
+} from './pipelineProfiler.js';
 
 const SAM_TRACKING_NATIVE = 832; // browser capture; SAM 3.1 resizes internally
 const MAX_STAGED_TRACKING_BYTES = 128 * 1024 * 1024;
@@ -123,6 +128,64 @@ const MAX_REFINEMENT_ROI_VISITS = 1_200_000;
 const REFINEMENT_ROI_YIELD_INTERVAL = 16_384;
 const FALLBACK_CAPTURE_MAX_POINTS = 240_000;
 const VIEW_SETTLE_MS = 280;
+const pipelineProfiler = createPipelineProfiler({
+  enabled: pipelineProfilerDiagnosticEnabled(location.search),
+  capacity: 512,
+});
+
+// The diagnostic surface is intentionally bounded and opt-in. It does not
+// render UI, issue GPU work, persist data, or log events to the console.
+if (pipelineProfiler.enabled) {
+  Object.defineProperty(globalThis, '__gaussianeditPipelineProfiler', {
+    configurable: true,
+    value: Object.freeze({
+      clear: () => pipelineProfiler.clear(),
+      snapshot: () => pipelineProfiler.snapshot(),
+      view: (options) => pipelineProfiler.view(options),
+    }),
+  });
+}
+
+function pipelineProfileContext({ session = null, active = state?.active, view = null } = {}) {
+  return {
+    runId: session ? `scan-${Math.round(session.id)}` : `selection-${active?.requestToken ?? 'none'}`,
+    revisions: {
+      scene: sceneContentRevision,
+      frame: active?.frame?.viewRevision ?? null,
+      view: view?.id ?? active?.frame?.id ?? null,
+      selection: active?.selectionRevision ?? null,
+      mask: active?.maskRevision ?? null,
+      scan: session?.coordinatorRunId ?? null,
+    },
+    source: {
+      providerId: session?.providerMode ?? null,
+      providerVersion: session?.providerLabel ?? null,
+      viewId: view?.id ?? null,
+      evidenceFamily: view?.evidenceGroup ?? null,
+      correlationGroup: view?.trackBranch ?? null,
+    },
+  };
+}
+
+async function profilePipelineOperation(stage, context, operation, metrics = null) {
+  if (!pipelineProfiler.enabled) return operation();
+  const span = pipelineProfiler.begin(stage, pipelineProfileContext(context));
+  try {
+    const result = await operation();
+    span.end(typeof metrics === 'function' ? metrics(result) : metrics ?? {});
+    return result;
+  } catch (error) {
+    if (context?.session && !coordinatedScanIsCurrent(context.session)) span.stale();
+    else if (error?.name === 'AbortError') span.cancel();
+    else span.fail(error);
+    throw error;
+  }
+}
+
+function recordPipelineMeasurement(stage, context, metrics) {
+  if (!pipelineProfiler.enabled) return;
+  pipelineProfiler.begin(stage, pipelineProfileContext(context)).end(metrics);
+}
 
 // ---------------------------------------------------------------- scene ----
 
@@ -4863,17 +4926,25 @@ async function applySelectionMask(active, mask, maskW, maskH, requestToken = act
   let lifted = active.liftCache;
   if (!lifted || lifted.mask !== mask || lifted.slack !== slack
     || lifted.projection !== frozen.projection) {
-    const result = await liftProjectedMaskAsync({
-      projection: frozen.projection,
-      mask, maskW, maskH,
-      absSlack: slack,
-      relSlack: 0.01,
-    }, (progress, seedCount) => {
-      updateWorkDetail(
-        'selection',
-        `Mapping visible splats · ${Math.round(progress * 100)}% · ${seedCount.toLocaleString()} found`,
-      );
-    }, () => state.active !== active || requestToken !== active.requestToken);
+    const result = await profilePipelineOperation(
+      PIPELINE_STAGES.GAUSSIAN_LIFT,
+      { active },
+      () => liftProjectedMaskAsync({
+        projection: frozen.projection,
+        mask, maskW, maskH,
+        absSlack: slack,
+        relSlack: 0.01,
+      }, (progress, seedCount) => {
+        updateWorkDetail(
+          'selection',
+          `Mapping visible splats · ${Math.round(progress * 100)}% · ${seedCount.toLocaleString()} found`,
+        );
+      }, () => state.active !== active || requestToken !== active.requestToken),
+      (value) => ({
+        counts: { input: mask.length, output: value.seeds.length },
+        bytes: { input: mask.byteLength, projection: frozen.projection?.depth?.byteLength },
+      }),
+    );
     lifted = {
       ...result,
       mask,
@@ -4936,7 +5007,7 @@ async function applySelectionMask(active, mask, maskW, maskH, requestToken = act
         `${seeds.length.toLocaleString()} visible splats mapped · dense mask, no gap search needed`,
       );
     }
-    const region = await growAsync({
+    const region = await profilePipelineOperation(PIPELINE_STAGES.BRIDGE_GROW, { active }, () => growAsync({
       grid: state.grid,
       centers: splat.centers,
       colors: splat.colors,
@@ -4953,7 +5024,9 @@ async function applySelectionMask(active, mask, maskW, maskH, requestToken = act
         'selection',
         `${selectedCount.toLocaleString()} splats in the object so far · mapping ${Math.round(progress * 100)}%`,
       );
-    }, () => state.active !== active || requestToken !== active.requestToken);
+    }, () => state.active !== active || requestToken !== active.requestToken), (value) => ({
+      counts: { input: seeds.length, output: value.size, addedGaussians: value.size },
+    }));
     growCache = {
       lifted,
       radius: growRadius,
@@ -4980,7 +5053,7 @@ async function applySelectionMask(active, mask, maskW, maskH, requestToken = act
     steps: ['find area', 'map visible side', 'check result', 'preview'],
     active: 2,
   });
-  const refined = await refineSelectionAsync({
+  const refined = await profilePipelineOperation(PIPELINE_STAGES.REFINE, { active }, () => refineSelectionAsync({
     region: growCache.region,
     seeds,
     projection: proj,
@@ -5004,7 +5077,9 @@ async function applySelectionMask(active, mask, maskW, maskH, requestToken = act
     componentRadius: growRadius,
   }, (progress, label) => {
     updateWorkDetail('selection', `${label} · ${Math.round(progress * 100)}%`);
-  }, () => state.active !== active || requestToken !== active.requestToken);
+  }, () => state.active !== active || requestToken !== active.requestToken), (value) => ({
+    counts: { input: growCache.region.size, output: value.selection.size },
+  }));
   if (state.active !== active || requestToken !== active.requestToken) {
     throw new DOMException('Selection superseded', 'AbortError');
   }
@@ -6978,7 +7053,15 @@ async function renderCoordinatedScanView(view, { index, signal, runId, total }) 
       throw new DOMException('Scan revision is stale', 'AbortError');
     }
     const encodeStartedAt = performance.now();
-    blob = await canvasToBlob(multiviewCapture, 'image/jpeg', 0.86);
+    blob = await profilePipelineOperation(
+      PIPELINE_STAGES.FRAME_ENCODE,
+      { session, view },
+      () => canvasToBlob(multiviewCapture, 'image/jpeg', 0.86),
+      (value) => ({
+        counts: { input: multiviewCapture.width * multiviewCapture.height, output: 1 },
+        bytes: { input: multiviewCapture.width * multiviewCapture.height * 4, output: value.size },
+      }),
+    );
     encodeMs = performance.now() - encodeStartedAt;
     reserveScanFrameBlob(session, blob, view.id);
     session.stagedPoseFrames.set(poseKey, blob);
@@ -7071,15 +7154,23 @@ async function beginCoordinatedTracking({
   });
   let temporalTracking;
   try {
-    temporalTracking = await propagationProvider.begin({
-      seedCanvas: trackingSeed.canvas,
-      seedMask: trackingSeed.mask,
-      maskW: seed.width,
-      maskH: seed.height,
-      branchFrames: session.branchFrames,
-      branches: [...new Set(views.map((view) => view.trackBranch ?? 'orbit'))],
-      objectId: `selection-${Math.round(session.id)}`,
-    });
+    temporalTracking = await profilePipelineOperation(
+      PIPELINE_STAGES.TRACKER_UPLOAD,
+      { session },
+      () => propagationProvider.begin({
+        seedCanvas: trackingSeed.canvas,
+        seedMask: trackingSeed.mask,
+        maskW: seed.width,
+        maskH: seed.height,
+        branchFrames: session.branchFrames,
+        branches: [...new Set(views.map((view) => view.trackBranch ?? 'orbit'))],
+        objectId: `selection-${Math.round(session.id)}`,
+      }),
+      () => ({
+        counts: { input: views.length, output: 1 },
+        bytes: { input: trackingSeed.mask.byteLength },
+      }),
+    );
   } finally {
     beginSettled = true;
     unregisterPendingCancel();
@@ -7186,7 +7277,7 @@ async function trackCoordinatedKeyView(session, view, index, signal) {
   let propagated;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      propagated = await propagationProvider.propagate({
+      propagated = await profilePipelineOperation(PIPELINE_STAGES.SAM3_TRACKING, { session, view }, () => propagationProvider.propagate({
         canvas: multiviewCapture,
         guidance,
         previousAreaRatio: session.previousAreaByBranch.get(branch) ?? null,
@@ -7200,7 +7291,10 @@ async function trackCoordinatedKeyView(session, view, index, signal) {
             total: progress.totalFrames ?? progress.targetFrame ?? 0,
           });
         },
-      });
+      }), (value) => ({
+        counts: { input: rendered.width * rendered.height, output: value.mask?.length ?? 0 },
+        bytes: { input: rendered.width * rendered.height * 4, output: value.mask?.byteLength },
+      }));
       break;
     } catch (error) {
       if (signal.aborted || error?.name === 'AbortError') throw error;
@@ -7278,7 +7372,7 @@ async function liftCoordinatedTrackedMask({
       },
     };
   }
-  const lifted = await liftProjectedMaskAsync({
+  const lifted = await profilePipelineOperation(PIPELINE_STAGES.PER_VIEW_LIFT, { session, view }, () => liftProjectedMaskAsync({
     projection: tracked.projection,
     mask: tracked.mask,
     maskW: tracked.maskW,
@@ -7291,8 +7385,11 @@ async function liftCoordinatedTrackedMask({
       `Adding to 3D ${index + 1} / ${session.views.length} · `
         + `${seedCount.toLocaleString()} splats · ${Math.round(progress * 100)}%`,
     );
-  }, () => signal.aborted || !coordinatedScanIsCurrent(session));
-  const selected = await growAsync({
+  }, () => signal.aborted || !coordinatedScanIsCurrent(session)), (value) => ({
+    counts: { input: tracked.mask.length, output: value.seeds.length },
+    bytes: { input: tracked.mask.byteLength, projection: tracked.projection?.depth?.byteLength },
+  }));
+  const selected = await profilePipelineOperation(PIPELINE_STAGES.BRIDGE_GROW, { session, view }, () => growAsync({
     grid: state.grid,
     centers: state.splat.centers,
     colors: state.splat.colors,
@@ -7310,7 +7407,9 @@ async function liftCoordinatedTrackedMask({
         ? Math.min(1, state.steps)
         : Math.min(2, state.steps),
     depthBand: state.slack * state.splat.scale * 3,
-  }, () => {}, () => signal.aborted || !coordinatedScanIsCurrent(session));
+  }, () => {}, () => signal.aborted || !coordinatedScanIsCurrent(session)), (value) => ({
+    counts: { input: lifted.seeds.length, output: value.size, addedGaussians: value.size },
+  }));
   const visible = await collectVisibleObjectGaussians(
     tracked.projection,
     session.baseSelection,
@@ -7376,7 +7475,7 @@ async function fuseCoordinatedEvidence({ lifted, index, signal }) {
     accepted: true,
     alteredVisibility: proposal.alteredVisibility,
   });
-  const fused = fuseViewEvidence(session.evidence, {
+  const fused = await profilePipelineOperation(PIPELINE_STAGES.EVIDENCE_FUSION, { session, view: proposal.view }, () => Promise.resolve(fuseViewEvidence(session.evidence, {
     baseSelection: session.baseSelection,
     baseConfidence: session.baseConfidence,
     confidenceBuffer: session.fusedConfidence,
@@ -7384,14 +7483,22 @@ async function fuseCoordinatedEvidence({ lifted, index, signal }) {
     minimumViews: state.multiview.minimumViews,
     confidenceThreshold: state.multiview.confidence,
     provisionalThreshold: state.minimumConfidence,
-  });
+  })), (value) => ({
+    counts: { input: proposal.selected.size, output: value.selection.size, addedGaussians: value.newlyAdded.size },
+    bytes: { evidence: session.fusedConfidence?.byteLength },
+  }));
   for (const excluded of state.manualExcluded) {
     fused.selection.delete(excluded);
     fused.newlyAdded.delete(excluded);
     fused.provisional.delete(excluded);
     fused.confidence[excluded] = 0;
   }
-  const added = await materializeFusedSelection(session, fused, index + 1);
+  const added = await profilePipelineOperation(
+    PIPELINE_STAGES.MATERIALIZATION,
+    { session, view: proposal.view },
+    () => materializeFusedSelection(session, fused, index + 1),
+    (value) => ({ counts: { input: fused.newlyAdded.size, output: value, addedGaussians: value } }),
+  );
   scanTray.fuse({ id: proposal.view.id, added });
   return { accepted: true, added };
 }
@@ -8782,6 +8889,21 @@ async function captureRefinementView(
     session.capturing = false;
   }
   timings.totalMs = performance.now() - captureStartedAt;
+  // These measurements reuse the capture's existing timing and buffers. The
+  // profiler must never create a second readback, timer query, or render pass.
+  recordPipelineMeasurement(PIPELINE_STAGES.SYNTHETIC_RENDER, { session, view }, {
+    wallMs: timings.sortMs + timings.renderMs,
+    activeCpuMs: timings.renderMs,
+    counts: { input: source?.count ?? 0, output: width * height },
+    bytes: { output: resources.pixels.byteLength, cutout: source?.count ? source.count * 4 * 4 : null },
+  });
+  recordPipelineMeasurement(PIPELINE_STAGES.SYNTHETIC_READBACK, { session, view }, {
+    wallMs: timings.readbackMs + timings.imageCopyMs,
+    activeCpuMs: timings.imageCopyMs,
+    yieldGapMs: Math.max(0, timings.readbackMs - timings.imageCopyMs),
+    counts: { input: width * height, output: width * height },
+    bytes: { input: resources.pixels.byteLength, output: resources.image.data.byteLength },
+  });
   return { width, height, timings, content, source };
 }
 

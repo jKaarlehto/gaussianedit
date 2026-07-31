@@ -1,9 +1,15 @@
 import assert from 'node:assert/strict';
 import {
   createPipelineProfiler,
+  pipelineProfilerDiagnosticEnabled,
   PIPELINE_BYTE_BUDGETS,
   PIPELINE_STAGES,
 } from '../pipelineProfiler.js';
+
+assert.equal(pipelineProfilerDiagnosticEnabled(''), false);
+assert.equal(pipelineProfilerDiagnosticEnabled('?pipelineProfiler=1'), true);
+assert.equal(pipelineProfilerDiagnosticEnabled('?pipelineProfiler=0'), false);
+assert.equal(pipelineProfilerDiagnosticEnabled('?other=1&pipelineProfiler=1'), true);
 
 let disabledClockCalls = 0;
 const disabled = createPipelineProfiler({

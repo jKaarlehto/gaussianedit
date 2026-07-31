@@ -113,6 +113,14 @@ export function createPipelineProfiler(options = {}) {
   return new PipelineProfiler(options);
 }
 
+/**
+ * Diagnostics are deliberately opt-in: no panel, storage, or trace is active
+ * unless the developer explicitly adds `?pipelineProfiler=1` to the URL.
+ */
+export function pipelineProfilerDiagnosticEnabled(search = '') {
+  return new URLSearchParams(String(search || '')).get('pipelineProfiler') === '1';
+}
+
 class PipelineProfiler {
   constructor({
     capacity = DEFAULT_CAPACITY,
