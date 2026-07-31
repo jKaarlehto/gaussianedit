@@ -1,78 +1,66 @@
-# GaussianEdit agent guide
+# GaussianEdit project guide
 
-This file is the operating contract for agents working in this repository.
-Read it before changing code. Historical branch reports and root-cause notes
-are preserved in [`AGENT_HANDOFF.md`](AGENT_HANDOFF.md).
+This file contains only GaussianEdit-specific product and repository rules.
+Read it before changing code. Historical provenance is in `AGENT_HANDOFF.md`.
 
-## Product goal
+## Framework entrypoint
 
-Build cutting-edge Gaussian object segmentation that feels immediate and
-understandable to a nontechnical user. The interaction should resemble a
-restrained sci-fi spacecraft scanner, not a computer-vision research console.
+The reusable development framework—job publication, worker-owned claims,
+leases, worktrees, checkpoints, machine evidence, root integration, MCP
+scopes, and human gates—comes only from the private orchestration MCP.
 
-The authoritative sources are:
+Before coordinating work, claiming a job, creating a worktree, or launching a
+subagent:
 
-1. [`PRODUCT_VISION.md`](PRODUCT_VISION.md) for the interaction and language.
-2. [`IMPLEMENTATION_TASKS.md`](IMPLEMENTATION_TASKS.md) for ordered work.
-3. This file for engineering workflow, safety, review, and release rules.
+1. Call `get_development_framework`.
+2. Verify its source commit and bundle digest.
+3. Call `orchestration_status` and use the authoritative `workQueue`.
 
-Do not redefine the project around whichever partial feature is easiest to
-finish. Work through section 0 of `IMPLEMENTATION_TASKS.md` in its stated order
-before advancing research-scale or decorative work.
+The canonical framework source is the private
+`jKaarlehto/gaussianedit-orchestration-framework` repository. Do not rebuild
+it from this file, copied prompts, rendered board HTML, cached task cards,
+browser scraping, tokens, or product files. If the MCP framework or queue is
+unavailable, stale, or incoherent, do not coordinate system work.
 
-## Current integration baseline
+## Product goal and sources
 
-Work on `feat/object-refinement`. The important integrated commits are:
+Build immediate, understandable Gaussian object segmentation for a
+nontechnical user. The experience should feel like a restrained sci-fi scanner,
+not a computer-vision research console.
 
-- `e0c725b` — isolate scan visibility from the live scene.
-- `356368c` — define stable pipeline stages and actor/status language.
-- `74759e0` — stabilize the immutable selection frame, visible-side work,
-  tracking cancellation, scan cleanup, and coordinator tests.
-- `be509b6` — supervise the dedicated SAM 3.1 runtime.
-- `3a1ea79` — implement the single-item FIFO scan-tray choreography.
+Product authority is local to this repository:
 
-The former isolated worktree commits `34e5cdd`, `c1e1277`, and `1b35a57` have
-already been reviewed and incorporated deliberately. Do not cherry-pick them
-again. Read `AGENT_HANDOFF.md` only for provenance and unresolved findings.
+1. `PRODUCT_VISION.md` — interaction and language.
+2. `UI_MODEL.md` — workspace names and state transitions.
+3. `IMPLEMENTATION_TASKS.md` — ordered product work.
+4. `FUSION_ARCHITECTURE.md` — evidence semantics and provider roles.
+5. This file — product safety, validation, and repository constraints.
 
-## Immediate goals
+Do not redefine the product around whichever partial feature is easiest to
+finish. Work section 0 of `IMPLEMENTATION_TASKS.md` in order before research
+or decorative work.
 
-Prioritize these outcomes:
+## Product acceptance and scope
 
-1. Validate the selection-frame contract in Microsoft Edge: cockpit click,
-   YOLO guidance, captured RGB, cropped 2D editor, SAM prompt, lifted
-   Gaussians, main highlight, and hologram must agree.
-2. Eliminate synthetic-render flicker. Synthetic capture must never alter the
-   live cockpit framebuffer, visibility, or full-scene Gaussian sort state.
-3. Keep visible-side lift, bridge growth, refinement, and hologram context
-   bounded and timed. No small selection may scale with the entire scene.
-4. Integrate `ScanCoordinator` into the all-sides path and drive UI from its
-   ordered progress/cancellation events.
-5. Finish the stable stage rail and real-unit counters:
-   `Select visible side` → `Scan all sides` → `Fix if needed` → `Dock object`,
-   with `Rendering n/m`, `Tracking n/m`, and `Adding to 3D n/m`.
-6. Add the safe read-only `Backend activity` drawer using the bounded tracker
-   log endpoint. Never expose command execution or arbitrary file access.
-7. Add explicit scan byte budgets and actual/estimated memory diagnostics,
-   then validate stability on the 8.8M-Gaussian Nelson scene.
-8. Verify hologram hover pauses at the current orientation, hands orbit control
-   to the user, and resumes without resetting spin, camera, or framing.
-
-Do not mark visual behavior complete until the user verifies it in Edge.
+- The product is the GaussianEdit 3D editor. Board, connector, MCP, framework,
+  automation, and dispatch work are system work; they never change product
+  counts or product acceptance state.
+- The user validates visible product behaviour manually in Microsoft Edge. A
+  build, unit test, static inspection, or agent report is never visual proof.
+- Product Acceptance lives only in the GaussianEdit candidate banner. Do not
+  expose board/system review records as product decisions.
+- Root integrates reviewed patches into `staging`; only an explicitly accepted
+  candidate advances to `main`.
 
 ## Hardware and browser safety
 
 - Do not open or control Codex, MCP, in-app, Chrome, or Chrome DevTools
-  browsers for this project. They may run without the discrete GPU and have
-  previously contributed to severe slowdown and system instability.
-- Use shell commands, unit tests, production builds, and static inspection.
-  The user performs live visual validation manually in Microsoft Edge.
-- Do not claim visual correctness from a successful build.
-- The app must fail closed when a supported discrete NVIDIA/AMD adapter is not
-  available.
-- Do not start or stop services unless the task requires it. Inspect exact PIDs
-  and command lines before terminating anything; never kill unrelated Node,
-  Python, ComfyUI, or Codex helper processes.
+  browsers for this project. They can use the wrong GPU and destabilize the
+  machine. The user performs live validation in Microsoft Edge.
+- Use shell checks, focused tests, production builds, and static inspection.
+- Fail closed without a supported discrete NVIDIA or AMD adapter.
+- Do not start or stop services unless required. Inspect exact PIDs and command
+  lines first; never kill unrelated Node, Python, ComfyUI, or Codex processes.
 
 ## Development services
 
@@ -82,97 +70,73 @@ Use the supervised stack:
 npm run dev
 ```
 
-Expected development URL:
+Expected development URL: `http://localhost:5173/`.
 
-```text
-http://localhost:5173/
-```
+The supervisor owns Vite, the dedicated SAM 3.1 service, and tracker service
+discovery. The tracker normally uses port 8091; do not hardwire an unrelated
+process there. Direct stateful tracking, cancellation, progress, and identity
+checks remain behind `MaskPropagationProvider`; do not replace it with ComfyUI.
 
-The supervisor starts Vite and the dedicated GaussianEdit SAM 3.1 service,
-verifies its identity, and proxies tracker requests. The tracker normally
-listens on port 8091 but the supervisor owns service discovery; do not hardwire
-an unrelated process on that port.
+## Rendering and selection-frame invariants
 
-The dedicated FastAPI tracker is the primary interactive backend. Do not
-replace it with ComfyUI merely because some Python packages currently come
-from `comfyenv`. ComfyUI may become an optional provider for broader workflows,
-but direct stateful tracking, cancellation, progress, and identity checks stay
-behind the existing `MaskPropagationProvider` contract.
-
-## Rendering and coordinate invariants
-
-- One immutable selection-frame record is authoritative for camera matrices,
-  framebuffer and CSS scale, capture dimensions, crop, color transform,
-  orientation, and scene/view revision.
-- YOLO, SAM, 2D editing, projection, lift, highlights, and hologram updates
-  must consume that exact frame or reject their result as stale.
-- Matrix parity is authoritative when a revision counter misses camera damping
-  or an automatic camera move.
-- A `WebGLRenderTarget` viewport/scissor uses physical target pixels. Do not
-  apply the display pixel ratio twice through renderer-level viewport sizing.
-- Synthetic scans use only the resident isolated Gaussian cutout. Never ask
-  the full cockpit scene to prepare or sort for a synthetic camera.
-- Save and restore render target, viewport, scissor, scissor-test, clear color,
-  clear alpha, auto-clear, output color space, tone mapping, exposure, and any
-  temporarily hidden scene objects before yielding.
-- Restore the visible framebuffer before awaiting asynchronous GPU readback.
-- Exclude cargo, HUD geometry, highlights, and transient effects from model
-  input without mutating their live-scene state across a yield.
+- One immutable selection-frame record owns camera matrices, framebuffer/CSS
+  scale, capture dimensions, crop, colour transform, orientation, and
+  scene/view revision.
+- YOLO, SAM, 2D editing, projection, lift, highlight, and hologram work use
+  that exact frame or reject stale results. Matrix parity is authoritative when
+  a revision misses damping or automatic camera movement.
+- Synthetic scans operate only on the resident isolated Gaussian cutout. Never
+  prepare or sort the full cockpit scene for a synthetic camera.
+- Render transactions restore target, viewport, scissor, clear state, output
+  colour space, tone mapping, exposure, and hidden objects before yielding.
+- Restore the visible framebuffer before asynchronous GPU readback. Exclude
+  cargo, HUD, highlights, and transient effects from model input without
+  changing live-scene state across a yield.
 
 ## Cancellation, memory, and responsiveness
 
-- Every camera, scene, selection, prompt, mask edit, and scan revision must
-  supersede stale work safely.
-- Cancellation must abort provider requests first, then release backend
-  sessions, staged blobs, image bitmaps, temporary canvases, projection
-  lookups, evidence buffers, cutouts, and render targets.
-- Keep only small tray snapshots after upload. Release native-resolution staged
-  frames when their FIFO item becomes active.
-- Put explicit byte limits on cutout buffers, staged frames, projections, and
-  evidence. Reduce resolution/view count or fail safely before allocation.
-- Yield interactive frames between expensive synthetic sorts and bounded work
-  batches.
-- Never scan an 8–10M-entry scene-wide array when the same result can be
-  computed from the active selection, touched IDs, or scan ROI.
+- Camera, scene, selection, prompt, mask edit, and scan revisions supersede
+  stale work safely.
+- Cancellation aborts provider requests before releasing backend sessions,
+  blobs, bitmaps, canvases, projections, evidence buffers, cutouts, and render
+  targets.
+- Keep only small tray snapshots after upload. Enforce byte limits for cutouts,
+  staged frames, projections, and evidence; reduce resolution/view count or
+  fail safely before allocation.
+- Yield interactive frames between bounded expensive batches. Never scan a
+  full 8–10M scene array where the active selection, touched IDs, or ROI works.
 
-## UX language contract
+## Product UX contract
 
-The top-level stage names never change:
+Top-level stages never change:
 
 ```text
 Select visible side → Scan all sides → Fix if needed → Dock object
 ```
 
-Use active verbs for app work: `Rendering`, `Tracking`, `Checking object
-match`, and `Adding to 3D`. A genuine human gate says `Your decision`, explains
-the uncertainty in one sentence, and offers concrete `Keep`, `Skip`, and
-`Edit` actions.
+Use `Rendering`, `Tracking`, `Checking object match`, and `Adding to 3D` with
+monotonic real units. A true product human gate says `Your decision`, explains
+the uncertainty, and offers `Keep`, `Skip`, and `Edit`; do not use fake review
+states or unexplained percentages.
 
-Do not use generic `Review`, `processing`, `working`, or unexplained
-percentages in the normal workflow. Show monotonic real units. The FIFO tray
-shows exactly one real evidence transaction: RGB first, real mask beside it,
-overlap, exactly two accepted-mask flashes, evidence transfer, removal, then
-the next item. Never restore a gallery or placeholder slots.
+The FIFO tray shows one real evidence transaction: RGB, real mask, overlap,
+two accepted-mask flashes, evidence transfer, removal, then the next item.
+Never restore a gallery or placeholder slots.
 
-## Multi-agent workflow
+## GaussianEdit-specific coordination constraints
 
-- Partition work by files and responsibilities before editing.
-- Only one agent may own `main.js` at a time. Likewise, avoid concurrent edits
-  to `index.html`, `package.json`, or `tracking_service/app.py`.
-- Prefer isolated modules and focused tests so integration remains deliberate.
-- Before work, report branch, worktree, status, assigned files, and dependencies.
-- After work, report changed files, behavior, tests and results, remaining
-  risks, and the commit hash if committed.
-- Do not merge or cherry-pick blindly. Compare the patch with current `HEAD`,
-  preserve later fixes, and resolve conflicts intentionally.
-- When the user asks to pause agents, stop active work, collect concise reports,
-  and record them in `AGENT_HANDOFF.md` before continuing.
+- Only one agent may own `main.js` at a time. Avoid concurrent edits to
+  `index.html`, `package.json`, or `tracking_service/app.py`.
+- Keep a product tranche narrow, coherent, and reviewable. Do not perform a
+  broad cosmetic/framework rewrite while stabilizing rendering.
+- Preserve unrelated user changes. Do not reset, checkout, delete, or overwrite
+  broad state without explicit user authority.
 - Keep user commentary concise and provide an update at least once per minute
   during long-running work.
 
 ## Verification
 
-Run the focused checks relevant to the patch, then the full shell gate:
+Run focused checks for the patch, then the relevant shell gate:
 
 ```text
 npm run test:selection-frame
@@ -186,55 +150,25 @@ npm run build
 git diff --check
 ```
 
-`npm run test:tracker-service` is a lightweight service-identity/log-contract
-test that deliberately avoids loading the 3.5GB checkpoint. Use it for tracker
-runtime or log-feed changes.
+`npm run test:tracker-service` is the lightweight service-identity/log-contract
+check. After implementation commits land, review render-state discipline,
+selection-frame parity, allocations and byte budgets, cancellation/cleanup,
+stale-result rejection, focused tests, and production build output.
 
-After implementation commits land, run a dedicated performance/correctness
-review covering:
+## Candidate banner and release notes
 
-- Three.js render-state discipline and isolated Gaussian sorting.
-- Selection frame, matrix, coordinate, crop, and revision correctness.
-- Allocations, byte budgets, main-thread stalls, and yielding.
-- Cancellation, cleanup, late responses, and stale-result rejection.
-- Focused tests and production build output.
-
-Do not publish a candidate banner until this review has no blocking findings.
-
-## Update banner and release notes
-
-[`releaseMetadata.js`](releaseMetadata.js) is the single source of truth for
-the in-app update banner. [`STABLE_UPDATES.md`](STABLE_UPDATES.md) mirrors the
-same candidate/stable label and notes for humans.
-
-For every reviewed, merged, user-testable tranche:
-
-1. Set a new unique `id`.
-2. Keep `status: 'candidate'` until the user validates the main flow in Edge.
-3. Set an accurate `publishedAt` timestamp.
-4. Write two to four short notes describing behavior the user can directly
-   verify. Do not advertise internal refactors alone.
-5. Propose optional `reviewItems` with stable item IDs and short,
-   user-verifiable labels for the candidate feedback inbox.
-6. The orchestrator adds those `reviewItems` to release metadata only after
-   integration review and all required shell gates pass.
-7. Mirror the exact label and note bullets in `STABLE_UPDATES.md`.
-8. Run the full shell verification gate again.
-9. Tell the user what changed and provide a short Edge validation checklist.
-
-Change a build to `stable` only after the agreed shell checks and live Edge
-workflow pass. Never update the banner for unreviewed, unmerged, speculative,
-or agent-only work.
+`releaseMetadata.js` is the source for the in-app update banner and
+`STABLE_UPDATES.md` mirrors it for people. For reviewed, merged, user-testable
+product work: use a new unique ID, keep `candidate` until Edge validation,
+record accurate timestamp and user-verifiable notes, and mirror the label and
+notes. Do not advertise internal refactors as visible product behaviour.
 
 ## Git and documentation hygiene
 
-- Inspect `git status`, recent commits, and worktrees before changing files.
-- Preserve user-owned and unrelated changes.
-- Use `apply_patch` for source/document edits.
-- Do not use destructive reset/checkout operations without explicit authority.
-- Commit coherent changes with intentional messages; do not commit generated
-  diagnostics, logs, checkpoints, downloaded scenes, or `.runtime` contents.
-- Update `IMPLEMENTATION_TASKS.md` only when behavior is implemented and
-  verified to the standard stated at the top of that file.
-- Keep `AGENT_HANDOFF.md` concise and current when work pauses or ownership
-  changes.
+- Inspect status, recent commits, and worktrees before changes.
+- Use `apply_patch` for source and documentation edits.
+- Commit coherent changes; never commit generated diagnostics, logs,
+  checkpoints, downloads, or `.runtime`.
+- Update `IMPLEMENTATION_TASKS.md` only for behaviour implemented and verified
+  to its stated standard.
+- Keep `AGENT_HANDOFF.md` concise when product work pauses or ownership changes.
