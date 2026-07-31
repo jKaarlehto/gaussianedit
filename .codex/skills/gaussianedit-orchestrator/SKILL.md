@@ -34,6 +34,10 @@ skill defines the root role.
 - Publish a named candidate only for a coherent user-testable tranche. Each
   visible review item carries candidate ID, item ID, task ID, owner, workspace,
   and a falsifiable question.
+- Product questions and decisions live in the GaussianEdit Three.js editor's
+  candidate banner. The board links product work to that banner; it does not
+  duplicate product decision controls or ask the user to approve internal WIP.
+  Board-site controls are only for board, connector, and framework work.
 - Import `Looks good` and `Back to loop` decisions from the product banner.
   Route comments to the owning task; clear an active review item only after its
   durable import is acknowledged. Only explicit acceptance records

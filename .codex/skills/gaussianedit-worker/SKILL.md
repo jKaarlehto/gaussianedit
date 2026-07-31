@@ -33,6 +33,9 @@ for your exact agent identity and the board shows your unexpired lease.
 - For user-visible behavior, return one to five stable, falsifiable Acceptance
   questions with owning task and workspace. Otherwise return exactly
   `none: no user-visible change`.
+- Product review questions are rendered in the GaussianEdit editor candidate
+  banner. Never turn branch names, internal review tasks, shell proofs, or WIP
+  checkpoints into user Acceptance items.
 
 ## Close
 

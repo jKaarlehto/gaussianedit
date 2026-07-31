@@ -404,6 +404,12 @@ they do not become interchangeable confidence numbers.
   request for user action appears only when a named candidate containing that
   item is published for Acceptance testing; review, integration, blocker
   resolution, reclaim, and scheduling remain agent/root actions.
+- Product Acceptance happens in the GaussianEdit Three.js editor's candidate
+  banner. The orchestration site may say that a product item is available in
+  the product Acceptance banner, but it must not duplicate product decision
+  controls or expose internal review/WIP jobs as user test items. The
+  orchestration site's own Acceptance controls are reserved for board,
+  connector, dispatcher, and framework work.
 - The root orchestrator owns task partitioning, patch review, integration,
   commits, pushes, candidate publication, and feedback routing. Implementation
   agents do not merge, publish, or update release metadata unless assigned that

@@ -16,9 +16,10 @@ replacing the running app. The banner asks the user to reload so code and build
 notes always refer to the same loaded version. Collapsing the banner leaves a
 small build chip at the top of the screen.
 
-## Current candidate — 2026.07.31-rc4
+## Current candidate — 2026.07.31-rc5
 
-- All-sides scanning now stays on one ordered run and continues after accepted views add new splats.
-- Pause and Resume stay on that same scan; editing or changing the confirmed seed cancels stale work safely.
-- Large-object preparation yields between bounded chunks and stops with a clear limit instead of attempting scene-scale work.
-- The 3D Object controls no longer advertise the disconnected Gaussians display mode.
+- Acceptance checks now live in the GaussianEdit editor and route Looks good or Back to loop directly to the owning product task.
+- A review item disappears only after the board confirms the exact candidate, item, owner, workspace, action, and idempotency key.
+- Back to loop requires a useful comment; failed or mismatched imports stay visible and retryable.
+- The accumulated all-sides scan candidate remains available for one focused in-product Acceptance pass.
+
