@@ -7,7 +7,8 @@ Read `AGENTS.md`, `PRODUCT_VISION.md`, `UI_MODEL.md`,
 
 ## Current orchestration snapshot
 
-- The production board is synchronized through local event 49. The completed
+- The production board was synchronized when this handoff was written; always
+  compare its live cursor with the latest local export before acting. The completed
   OAuth smoke claim is released, and no raw work token remains in generated
   job state.
 - No product job is currently authorized for cloud dispatch. That is correct:
