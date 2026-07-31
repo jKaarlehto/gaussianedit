@@ -10,6 +10,9 @@ param(
     "release",
     "dispatch-claim",
     "dispatch-result"
+    ,"local-claim"
+    ,"local-renew"
+    ,"local-close"
   )]
   [string]$Action,
 
@@ -19,6 +22,7 @@ param(
   [ValidateSet("claimed", "review", "completed")]
   [string]$CheckpointStatus = "claimed",
   [string]$Summary,
+  [string[]]$Files = @(),
   [string[]]$Tests = @(),
   [string[]]$Blockers = @(),
   [string]$Next = "",
@@ -162,6 +166,19 @@ function Export-LocalBoard {
   }
 }
 
+function Get-OrchestrationHelper {
+  $codexRoot = if ([string]::IsNullOrWhiteSpace($env:CODEX_HOME)) {
+    Join-Path $HOME ".codex"
+  } else {
+    $env:CODEX_HOME
+  }
+  $helper = Join-Path $codexRoot "skills\orchestrate-development\scripts\orchestrate.py"
+  if (-not (Test-Path -LiteralPath $helper)) {
+    throw "Missing orchestrate-development helper"
+  }
+  return $helper
+}
+
 function Invoke-BoardRequest {
   param(
     [Parameter(Mandatory)][ValidateSet("GET", "POST")][string]$Method,
@@ -198,6 +215,50 @@ function Invoke-BoardRequest {
 }
 
 switch ($Action) {
+  "local-claim" {
+    Require-Value Task $Task
+    Require-Value Agent $Agent
+    $raw = & python (Get-OrchestrationHelper) claim $Task $Agent --root $repoRoot | Out-String
+    if ($LASTEXITCODE -ne 0) { throw "Local work claim failed" }
+    $result = $raw | ConvertFrom-Json
+    Save-PrivateToken "lease" $Task $result.lease.token
+    $result.lease.PSObject.Properties.Remove("token")
+    if ($result.job.lease) { $result.job.lease.PSObject.Properties.Remove("token") }
+    $result | ConvertTo-Json -Depth 20
+  }
+  "local-renew" {
+    Require-Value Task $Task
+    Require-Value Agent $Agent
+    Require-Value Summary $Summary
+    $arguments = @(
+      (Get-OrchestrationHelper), "update", $Task, $Agent, "in_progress", $Summary,
+      "--root", $repoRoot,
+      "--event", "checkpoint",
+      "--lease-token", (Read-PrivateToken "lease" $Task),
+      "--tests", ($Tests -join ","),
+      "--blockers", ($Blockers -join ","),
+      "--next", $Next,
+      "--files", ($Files -join ",")
+    )
+    & python @arguments
+    if ($LASTEXITCODE -ne 0) { throw "Local work lease renewal failed" }
+  }
+  "local-close" {
+    Require-Value Task $Task
+    Require-Value Agent $Agent
+    Require-Value Summary $Summary
+    $arguments = @(
+      (Get-OrchestrationHelper), "close", $Task, $Agent, $Summary,
+      "--root", $repoRoot,
+      "--lease-token", (Read-PrivateToken "lease" $Task),
+      "--tests", ($Tests -join ","),
+      "--blockers", ($Blockers -join ","),
+      "--next", $Next,
+      "--files", ($Files -join ",")
+    )
+    & python @arguments
+    if ($LASTEXITCODE -ne 0) { throw "Local work close failed" }
+  }
   "status" {
     $result = Invoke-BoardRequest GET "status"
     $result | ConvertTo-Json -Depth 20
