@@ -7,6 +7,10 @@ import {
   reviewReleaseForNotice,
   reviewStorageKey,
 } from '../candidateReview.js';
+import {
+  createCandidateFeedbackBridge,
+  normalizeCandidateFeedback,
+} from '../candidateFeedback.js';
 
 class FakeElement {
   constructor(tagName) {
@@ -66,6 +70,11 @@ class FakeElement {
   }
 
   select() {}
+
+  querySelector(selector) {
+    return this.children.find((child) => selector === '.candidate-review-item'
+      && child.className === 'candidate-review-item') ?? null;
+  }
 }
 
 class FakeDocument {
@@ -83,6 +92,32 @@ class FakeDocument {
   }
 }
 
+assert.deepEqual(normalizeCandidateFeedback({
+  candidateId: 'candidate-42', itemId: 'fifo', decision: 'issue', comment: ' Needs another pass. ',
+}), {
+  candidateId: 'candidate-42', itemId: 'fifo', decision: 'issue', comment: 'Needs another pass.',
+  idempotencyKey: 'candidate-feedback:candidate-42:fifo:issue',
+});
+assert.throws(
+  () => normalizeCandidateFeedback({ candidateId: 'candidate-42', itemId: 'fifo', decision: 'issue' }),
+  /needs a short comment/i,
+);
+let request = null;
+const bridge = createCandidateFeedbackBridge({
+  endpoint: 'https://not-allowed.example/feedback',
+  fetchImpl: async (url, options) => {
+    request = { url, options };
+    return { ok: true, json: async () => ({ imported: true }) };
+  },
+});
+await bridge.submit({ candidateId: 'candidate-42', itemId: 'fifo', decision: 'ok', comment: '' });
+assert.equal(request.url, '/api/orchestration/board-action', 'only the fixed same-origin route is allowed');
+assert.equal(request.options.credentials, 'same-origin');
+assert.deepEqual(JSON.parse(request.options.body), {
+  candidateId: 'candidate-42', itemId: 'fifo', decision: 'ok', comment: '',
+  idempotencyKey: 'candidate-feedback:candidate-42:fifo:ok',
+});
+
 class FakeStorage {
   constructor() {
     this.values = new Map();
@@ -94,6 +129,10 @@ class FakeStorage {
 
   setItem(key, value) {
     this.values.set(key, value);
+  }
+
+  removeItem(key) {
+    this.values.delete(key);
   }
 }
 
@@ -159,34 +198,19 @@ assert.equal(root.children.length, 4, 'heading, two items, and actions are rende
 const firstRow = root.children[1];
 const secondRow = root.children[2];
 assert.equal(firstRow.dataset.state, 'pending');
-assert.equal(firstRow.children[1].value, 'pending');
 assert.equal(secondRow.dataset.state, 'pending');
 
-const firstDecision = firstRow.children[1];
+const firstActions = firstRow.children[1];
 const firstComment = firstRow.children[2];
-firstDecision.value = 'ok';
-firstDecision.dispatch('change');
 firstComment.value = '  Exact colors and camera angle match.  ';
 firstComment.dispatch('input');
-assert.equal(firstRow.dataset.state, 'ok');
-assert.equal(firstDecision.value, 'ok');
+assert.equal(firstRow.dataset.state, 'pending');
 assert.deepEqual(
   JSON.parse(storage.getItem(reviewStorageKey(release.id, 'rgb-view'))),
-  { status: 'ok', comment: '  Exact colors and camera angle match.  ' },
+  { status: 'pending', comment: '  Exact colors and camera angle match.  ' },
 );
-
-firstDecision.value = 'issue';
-firstDecision.dispatch('change');
-assert.equal(firstRow.dataset.state, 'issue');
-assert.equal(
-  firstComment.value,
-  '  Exact colors and camera angle match.  ',
-  'changing acceptance state preserves the note',
-);
-assert.deepEqual(
-  JSON.parse(storage.getItem(reviewStorageKey(release.id, 'rgb-view'))),
-  { status: 'issue', comment: '  Exact colors and camera angle match.  ' },
-);
+assert.equal(firstActions.children[0].textContent, 'Looks good');
+assert.equal(firstActions.children[1].textContent, 'Back to loop');
 
 const report = formatReviewReport(release, new Map([
   ['rgb-view', { status: 'ok', comment: 'Exact colors and camera angle match.' }],
@@ -227,7 +251,7 @@ const reloaded = createCandidateReviewInbox({
 });
 reloaded.render(release);
 const reloadedFirst = reloadedHost.children[0].children[1];
-assert.equal(reloadedFirst.children[1].value, 'issue');
+assert.equal(reloadedFirst.dataset.state, 'pending');
 assert.equal(
   reloadedFirst.children[2].value,
   '  Exact colors and camera angle match.  ',
@@ -244,14 +268,14 @@ storage.setItem(
 );
 reloaded.render(legacyRelease);
 const legacyRow = reloadedHost.children[0].children[1];
-assert.equal(legacyRow.children[1].value, 'ok', 'v1 checked state migrates to explicit OK');
+assert.equal(legacyRow.dataset.state, 'ok', 'v1 checked state migrates to explicit OK');
 assert.equal(legacyRow.children[2].value, 'Keep this legacy note.', 'v1 note is preserved');
-legacyRow.children[1].value = 'pending';
-legacyRow.children[1].dispatch('change');
+legacyRow.children[2].value = 'A different note.';
+legacyRow.children[2].dispatch('input');
 assert.deepEqual(
   JSON.parse(storage.getItem(reviewStorageKey(legacyRelease.id, 'legacy-check'))),
-  { status: 'pending', comment: 'Keep this legacy note.' },
-  'changing a migrated acceptance state preserves its note',
+  { status: 'ok', comment: 'A different note.' },
+  'editing a migrated note preserves its explicit decision',
 );
 
 reloaded.render({ ...release, id: 'candidate-43' });
@@ -275,11 +299,12 @@ const hmrInbox = createCandidateReviewInbox({
   storage,
   clipboard: null,
   documentRef,
+  feedbackBridge: { submit: async () => {} },
 });
 hmrInbox.render(reviewReleaseForNotice(loadedRc1, loadedRc1, false));
 const rc1Row = hmrHost.children[0].children[1];
-rc1Row.children[1].value = 'ok';
-rc1Row.children[1].dispatch('change');
+rc1Row.children[1].children[0].dispatch('click');
+await new Promise((resolve) => setTimeout(resolve, 0));
 hmrInbox.render(reviewReleaseForNotice(loadedRc1, announcedRc2, true));
 const hmrRow = hmrHost.children[0].children[1];
 assert.equal(hmrHost.children[0].dataset.releaseId, 'rc1');
@@ -288,16 +313,13 @@ assert.equal(
   'Check the loaded rc1 behavior',
   'an HMR announcement cannot expose checks for code that is not loaded',
 );
-assert.equal(hmrRow.children[1].value, 'ok');
+assert.equal(hmrRow.dataset.state, 'pending');
 assert.equal(
   storage.getItem(reviewStorageKey('rc2', 'same-check')),
   null,
   'reviewing loaded rc1 never creates rc2 feedback',
 );
-assert.deepEqual(
-  JSON.parse(storage.getItem(reviewStorageKey('rc1', 'same-check'))),
-  { status: 'ok', comment: '' },
-  'loaded rc1 feedback remains persisted under rc1',
-);
+assert.equal(storage.getItem(reviewStorageKey('rc1', 'same-check')), null,
+  'a durably imported decision clears the local pending item');
 
 console.log('candidate review inbox persistence and report tests passed');
