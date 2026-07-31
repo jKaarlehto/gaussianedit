@@ -1,0 +1,8 @@
+.lock
+dashboard.json
+events*.jsonl
+handoffs/
+jobs.json
+meta.json
+snapshot.json
+secrets/

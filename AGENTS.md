@@ -342,6 +342,56 @@ they do not become interchangeable confidence numbers.
 
 ## Multi-agent workflow
 
+- At the start of a new root orchestration task, read this file and
+  `ORCHESTRATION_HANDOFF.md`, inspect Git status/worktrees, run the local
+  orchestration `summary` and `inbox`, and compare the generated export with
+  the authenticated production board. Use inexpensive read-only agents to
+  inventory independent product, Git, and orchestration lanes before assigning
+  edits. The root reconciles their evidence into the board; scanners never
+  claim implementation ownership merely by reporting findings.
+- In a messy shared worktree, first preserve and classify every diff. Mark
+  duplicate or superseded records explicitly, release expired claims, and
+  partition the remaining work into non-overlapping coherent tranches. Do not
+  start cleanup implementation until the board names current ownership,
+  acceptance criteria, Git mode, and the next root action.
+- `feat/object-refinement` is the canonical integration branch. Before each
+  delegation, the root records its exact base commit. By default, a new
+  implementation task receives an isolated `feat/<task-id>` branch and
+  worktree created from that base.
+- Every delegation records the repository-relative worktree label, branch,
+  base commit, upstream, owned files, Git mode, and lifecycle stage. A shared
+  dirty integration checkout is an explicit `shared_wip` exception: assign one
+  owner per overlapping file, and workers never commit from that checkout.
+- Before dispatching an implementation prompt, root `publish`s a queued job
+  with its stable task ID, exact Git base/branch/worktree mode, file ownership,
+  and acceptance criteria, then includes that task ID in the prompt. The
+  worker's first action is `claim <task> <agent>` followed by an independent
+  re-read of the returned task, Git, files, and acceptance scope. Only a
+  successful atomic claim permits work.
+- A claim lease has an owner, private token, expiry, and source revision.
+  Meaningful checkpoints renew it; heartbeat-only events are prohibited.
+  Review and closeout release the active claim. The helper refuses concurrent,
+  closed, expired, ineligible, or wrong-owner/token work.
+- Only root may `release` an expired or confirmed orphan claim, with a reason.
+  Release never deletes work. Reclaim resumes the latest valid immutable
+  handoff if present; otherwise it explicitly restarts from the published
+  canonical base without deleting or discarding dirty state.
+- An isolated worker may create one or a few coherent commits on the owned task
+  branch after relevant tests pass. Workers never merge, rebase, force-push,
+  target `main`, or modify unrelated changes. Closeout records the exact head
+  commit and whether the worktree is dirty.
+- The root reviews `base..head` and reruns applicable gates, then integrates
+  intentionally into `feat/object-refinement`, records `integrated` authority
+  at the exact resulting commit, and pushes it. A worker commit or clean task
+  branch is never integration proof.
+- `feat/object-refinement` is the accumulated candidate branch. Agents never
+  merge into it directly: root may integrate multiple reviewed tranches there,
+  publish one named candidate, collect one bounded Edge acceptance pass from
+  the user, and only then advance the accepted candidate to stable/main.
+- P0/P1/P2 express priority, not completion or user ownership. A dashboard
+  request for user action appears only when a named candidate containing that
+  item is published; review, integration, blocker resolution, reclaim, and
+  scheduling remain agent/root actions.
 - The root orchestrator owns task partitioning, patch review, integration,
   commits, pushes, candidate publication, and feedback routing. Implementation
   agents do not merge, publish, or update release metadata unless assigned that
@@ -371,10 +421,93 @@ they do not become interchangeable confidence numbers.
   while stabilizing rendering.
 - Prefer isolated modules and focused tests so integration remains deliberate.
 - Before work, report branch, worktree, status, assigned files, and dependencies.
-- Checkpoints use the same compact fields: `owner`, `priority`, `files`,
-  `completed`, `tests`, `blocker`, `next`, and `reviewItems`. The orchestrator
-  derives the user-facing dashboard from these reports; the dashboard is not a
-  substitute for repository state, test output, or Edge validation.
+- Use `$orchestrate-development` for token-light coordination. Initialize
+  `.codex/orchestration/` once, append `delegation`, `checkpoint`, `review`,
+  `blocked`, `comment`, and `completed` events with its helper, and export the
+  bounded dashboard JSON after meaningful changes. Do not post secrets,
+  absolute paths, source/log dumps, or redundant unchanged status.
+- Post once immediately after delegation/start, then only when a fact changes
+  materially, work blocks, or review begins, and once at closeout before the
+  agent stops. Do not emit periodic heartbeats, restate unchanged progress, or
+  spend conversation tokens duplicating the structured event.
+- Status events carry stable task and review IDs plus `agent`, `priority`,
+  `files`, `status`, `summary`, `tests`, `blockers`, `next`, `reviewItems`,
+  `commit`, `timestamp`, and authority. Worker events are always
+  `agent_claimed`; only the root records `integrated` after review/gates and
+  `user_verified` after explicit Edge acceptance. The root checks `inbox`
+  after agent turns and owns dashboard/release materialization. Dashboard task
+  cards must show these three authority levels distinctly. The dashboard is an
+  index, never a substitute for repository state, test output, patch review,
+  or Edge validation.
+- Do not hand off work that is near enough to completion for the current owner
+  to finish and close out cheaply. A handoff is only for genuinely unfinished
+  work at a clean, pushed, immutable commit with a matching unfinished worker
+  checkpoint. The root's fail-closed manifest must name the known delegated
+  task, owned files, explicit acceptance criteria, passing tests, and exact
+  checkpoint commit. Record dispatch and eventual cleanup audit events. The
+  helper never deletes worktrees; branch/worktree cleanup remains a separate
+  explicit root action.
+- For unfinished cloud work, the root creates and pushes
+  `handoff/<task-id>-<date>` at the exact reviewed checkpoint. Its manifest
+  records base, head, tree, upstream, tests, acceptance criteria, and ownership.
+  Cloud receives no dirty state and returns work on a separate task branch or
+  pull request, never `main`.
+- Cleanup happens only after deliberate integration or abandonment and remote
+  preservation. Record the cleanup audit event before explicitly removing a
+  worktree. No helper may automatically perform destructive Git cleanup.
+- The status site and scheduled dispatcher consume the same exported
+  machine-readable queue and top-level protocol conventions, including
+  config-defined route names, cursor/freshness rules, atomic idempotent claims,
+  a one-dispatch limit, and fail-closed eligibility reasons. Neither may scrape
+  rendered dashboard UI or give cloud agents local-file access. Worktrees/files
+  persist across tasks, but conversation and private context do not. Local
+  continuation may start from an explicitly documented worktree state; cloud
+  continuation requires the manifest's immutable pushed commit.
+- The repo plugin at
+  `.agents/plugins/plugins/gaussianedit-orchestration/` bundles the authenticated
+  board connection with `$dispatch-cloud-work`. Local Codex tasks may use the
+  same plugin, but local development still follows this repository contract
+  and the `$orchestrate-development` helper. A web scheduled task can run while
+  the laptop is off only from plugin-visible board data and a pushed immutable
+  handoff; it never receives the local checkout.
+- A scheduled heartbeat is a scheduler recurrence, not a work-lease heartbeat.
+  It dispatches at most one eligible job per run. If the scheduled-task host
+  lacks a native Codex cloud-task creation capability, it records
+  `DISPATCH_UNSUPPORTED` after a successful dispatch claim and creates no
+  substitute local task.
+- Product jobs and board/automation jobs are separate status categories.
+  Status-site, orchestration, dispatcher, and cloud-dashboard work never counts
+  toward product Done, Under way, Waiting, or Needs attention totals.
+- The local helper remains the repository authority. After meaningful local
+  events, root runs `scripts/orchestration-board.ps1 sync`; the wrapper exports
+  only when the event cursor advanced and resolves every route from
+  `.codex/orchestration/config.json`. Workers post locally and never mirror
+  directly to production. The sync endpoint accepts only a newer cursor or an
+  exact idempotent replay, preserves worker leases, and forces synchronized
+  dispatch entries closed until a separate immutable handoff is authorized.
+- Machine access uses the user-scoped
+  `GAUSSIANEDIT_ORCHESTRATION_BASE_URL`,
+  `GAUSSIANEDIT_SITES_BYPASS_TOKEN`, and
+  `GAUSSIANEDIT_ORCHESTRATION_API_TOKEN` settings. The local helper persists
+  only a one-way hash of a work-claim token; the raw token is returned once to
+  its worker. The board wrapper stores machine lease and release tokens only as
+  DPAPI-encrypted files under the ignored `.codex/orchestration/secrets/`
+  directory. Never print or persist plaintext tokens.
+- Consumers distinguish immutable source freshness (`generatedAt`, `lastSeq`,
+  and `sourceRevision`) from the endpoint response time (`servedAt`). Missing,
+  stale, or inconsistent freshness and protocol fields fail closed.
+- `workQueue` is the authoritative local publish/claim/lease queue and remains
+  separate from the cloud `dispatchQueue`. Legacy task events stay readable but
+  cannot be started without a published job.
+- Do not declare an orchestration or cleanup goal complete until Git and the
+  board reconcile. Inspect every worktree; the canonical integration worktree
+  and every active task worktree must be clean, each retained branch must have
+  an explicit board state and remote preservation, `HEAD` must equal its
+  configured upstream, root `integrated` authority must name that exact commit,
+  no active or expired lease may remain, and the production board cursor must
+  equal the latest local export. Intentional unfinished work must be published
+  with ownership or preserved in an immutable handoff; it cannot remain as an
+  unexplained dirty checkout.
 - After work, report changed files, behavior, tests and results, remaining
   risks, and the commit hash if committed. Every implementation agent must also
   return one to five short, falsifiable questions about user-visible behavior

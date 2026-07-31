@@ -1,0 +1,4 @@
+interface:
+  display_name: "Dispatch GaussianEdit Cloud Work"
+  short_description: "Safely dispatch one board job to cloud"
+  default_prompt: "Use $dispatch-cloud-work to inspect the GaussianEdit board and dispatch at most one eligible cloud job."
