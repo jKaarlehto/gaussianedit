@@ -492,14 +492,15 @@ they do not become interchangeable confidence numbers.
   to finish and close out cheaply. A handoff is only for genuinely unfinished
   work at a clean, pushed, immutable commit with a matching unfinished worker
   checkpoint. The root's fail-closed manifest must name the known delegated
-  task, owned files, explicit acceptance criteria, passing tests, and exact
-  checkpoint commit. Record dispatch and eventual cleanup audit events. The
+  task, owned files, explicit acceptance criteria, test state, and exact
+  checkpoint commit. Tests may be not-run for unfinished work; the resumed
+  worker runs them. Record dispatch and eventual cleanup audit events. The
   helper never deletes worktrees; branch/worktree cleanup remains a separate
   explicit root action.
 - Before any local owner or root task stops, every claimed job must reach one
   of three explicit states: finished/review-ready and closed; genuinely
-  unfinished and remote-ready; or local-only blocked because its dirty,
-  unpushed, or untested state fails the handoff gate. Remote-ready is the
+  unfinished and remote-ready; or local-only blocked because its dirty or
+  unpushed state fails the handoff gate. Remote-ready is the
   default for genuinely unfinished work: root creates and pushes the immutable
   handoff, validates its manifest and upstream ref, releases the intentionally
   stopped local claim as a confirmed orphan, authorizes dispatch, exports, and
@@ -523,8 +524,9 @@ they do not become interchangeable confidence numbers.
   a one-dispatch limit, and fail-closed eligibility reasons. Neither may scrape
   rendered dashboard UI or give cloud agents local-file access. Worktrees/files
   persist across tasks, but conversation and private context do not. Local
-  continuation may start from an explicitly documented worktree state; cloud
-  continuation requires the manifest's immutable pushed commit.
+  continuation may start from an explicitly documented worktree state. Cloud
+  catch-up starts either from a new job's clean pushed immutable base or from
+  an interrupted job's validated clean pushed handoff.
 - The repo plugin at
   `.agents/plugins/plugins/gaussianedit-orchestration/` bundles the authenticated
   board connection with `$dispatch-cloud-work`; its manifest, app binding, and
@@ -532,11 +534,11 @@ they do not become interchangeable confidence numbers.
   tasks may use the same plugin, but local development still follows this
   repository contract and the `$orchestrate-development` helper. A web
   scheduled task can run while the laptop is off only from plugin-visible board
-  data and a pushed immutable handoff; it never receives the local checkout.
+  data and a pushed immutable job branch; it never receives the local checkout.
 - A scheduled heartbeat is a scheduler recurrence, not a work-lease heartbeat.
   It dispatches at most one eligible job per run and uses only the documented
   GitHub path: after the exclusive board dispatch claim, open or reuse the
-  immutable handoff's draft PR into `staging` and post one bounded idempotent
+  immutable job branch's draft PR into `staging` and post one bounded idempotent
   non-review `@codex` implementation comment. Record the GitHub PR/comment IDs
   and PR URL in `dispatch_result`. Require the GaussianEdit Orchestration and
   GitHub plugins, never an API key or undocumented native cloud-task endpoint.
@@ -545,6 +547,11 @@ they do not become interchangeable confidence numbers.
   substitute. Do not promise that the GitHub-triggered cloud chat can access
   the connector or acquire a worker lease. The exclusive dispatch execution
   plus later PR/commit reconciliation are authoritative.
+- Worker leases default to five minutes and renew only when a meaningful
+  changed-facts checkpoint arrives. A live lease blocks cloud dispatch. After
+  expiry, interrupted work is dispatchable only from a validated clean pushed
+  handoff; a never-started published job may dispatch from its clean base.
+  Passing tests are worker work, not a dispatch prerequisite.
 - Product jobs and board/automation jobs are separate status categories.
   **PRODUCT means the GaussianEdit 3D editor itself:** selection, segmentation,
   Gaussian lifting/refinement, scans, rendering, docking, editor performance,
@@ -564,8 +571,9 @@ they do not become interchangeable confidence numbers.
   only when the event cursor advanced and resolves every route from
   `.codex/orchestration/config.json`. Workers post locally and never mirror
   directly to production. The sync endpoint accepts only a newer cursor or an
-  exact idempotent replay, preserves worker leases, and forces synchronized
-  dispatch entries closed until a separate immutable handoff is authorized.
+  exact idempotent replay and preserves worker leases. It derives catch-up
+  eligibility only for a new clean queued job or expired work with a validated
+  clean handoff; it never treats improvement intake as work.
 - Machine access uses the user-scoped
   `GAUSSIANEDIT_ORCHESTRATION_BASE_URL`,
   `GAUSSIANEDIT_SITES_BYPASS_TOKEN`, and

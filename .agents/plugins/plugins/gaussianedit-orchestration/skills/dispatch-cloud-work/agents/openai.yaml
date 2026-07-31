@@ -1,4 +1,4 @@
 interface:
   display_name: "Dispatch GaussianEdit Cloud Work"
-  short_description: "Dispatch one immutable handoff via GitHub"
-  default_prompt: "Use $dispatch-cloud-work to claim and trigger at most one eligible GaussianEdit handoff through an idempotent GitHub PR comment."
+  short_description: "Dispatch one catch-up job via GitHub"
+  default_prompt: "Use $dispatch-cloud-work to claim and trigger at most one eligible GaussianEdit catch-up job through an idempotent GitHub PR comment."

@@ -85,11 +85,14 @@ Keep `Back to loop` and its comment pending until it is routed to a separately
 published task. Product decisions remain solely in the GaussianEdit editor
 Acceptance banner; never duplicate them on the board.
 
-Use cloud dispatch only for genuinely unfinished work preserved at a clean,
-pushed immutable handoff commit. The scheduled dispatcher may claim at most one
-eligible job and must use $dispatch-cloud-work. It must not receive local files
-or dirty state. It uses the documented GitHub path only: open or reuse the
-handoff's draft PR into `staging`, then post one bounded idempotent non-review
+Use cloud dispatch for an existing new queued job at its clean pushed immutable
+base, or for genuinely unfinished work preserved at a clean pushed immutable
+handoff after its short worker lease expires. Passing tests are not a dispatch
+prerequisite; the resumed worker runs them. The scheduled dispatcher may claim
+at most one eligible job and must use $dispatch-cloud-work. It must not receive
+local files or dirty state. It uses the documented GitHub path only: open or
+reuse the job branch's draft PR into `staging`, then post one bounded idempotent
+non-review
 `@codex` implementation comment. Require the GaussianEdit Orchestration and
 GitHub plugins and no API key. If GitHub writes or configured Codex cloud
 repository support are unavailable, record `DISPATCH_UNSUPPORTED`; never use

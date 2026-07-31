@@ -27,7 +27,7 @@ param(
   [string[]]$Tests = @(),
   [string[]]$Blockers = @(),
   [string]$Next = "",
-  [int]$LeaseSeconds = 1800,
+  [int]$LeaseSeconds = 300,
   [string]$SourceRevision,
   [string]$IdempotencyKey,
   [ValidateSet("created", "failed")]

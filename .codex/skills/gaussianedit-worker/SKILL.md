@@ -36,6 +36,9 @@ cloud chat can access the connector. Root later reconciles its PR commits.
   are not status.
 - Renew the lease only with a meaningful checkpoint. Never print, persist, or
   transmit its plaintext token outside the private claim mechanism.
+- Worker leases default to five minutes. Post a meaningful changed-facts
+  checkpoint before expiry while actively working; idle workers intentionally
+  lose exclusivity and can be resumed only from a validated clean handoff.
 - For user-visible behavior, return one to five stable, falsifiable Acceptance
   questions with owning task and workspace. Otherwise return exactly
   `none: no user-visible change`.

@@ -1,6 +1,6 @@
 ---
 name: dispatch-cloud-work
-description: Dispatch at most one authorized GaussianEdit immutable handoff through the authenticated board and documented GitHub draft-PR @codex trigger. Use for scheduled or manual runs that must remain idempotent, use no API key or local files, and fail closed when GitHub writes or Codex cloud repository setup are unavailable.
+description: Dispatch at most one eligible GaussianEdit backlog job through the authenticated board and documented GitHub draft-PR @codex trigger. Use for scheduled or manual catch-up runs that prioritize existing system work before product work, remain idempotent, invent no jobs, and fail closed on unsafe state.
 ---
 
 # Dispatch GaussianEdit cloud work
@@ -10,13 +10,16 @@ claims/results, and the GitHub plugin for pull-request and comment operations.
 Never scrape HTML, read local files, request an API key, or call an undocumented
 native cloud-task endpoint.
 
-## Dispatch one handoff
+## Dispatch one catch-up job
 
 1. Read the current immutable framework and verify its commit, digest, and
    freshness. Call `orchestration_status` and validate `protocol`, `workQueue`,
    `dispatchQueue`, `generatedAt`, `lastSeq`, and `sourceRevision`.
 2. Select at most one already-published entry that is both authorized and
-   eligible and has a clean, tested, pushed immutable handoff. Order eligible
+   eligible. Require either a new queued job at its clean pushed immutable base,
+   or interrupted work with an expired lease and a clean pushed immutable
+   handoff. Passing tests are not a dispatch prerequisite; the worker performs
+   them. Order eligible
    SYSTEM cleanup/maintenance by priority then age before eligible PRODUCT work
    by priority then age. PRODUCT is GaussianEdit 3D editor work only; board,
    site, connector, orchestration/framework, audit, dispatch, agent,
@@ -31,13 +34,14 @@ native cloud-task endpoint.
    connector actions with identical read/write semantics. Require Codex cloud
    to be confirmed configured for `jKaarlehto/gaussianedit`. Otherwise record
    failed `dispatch_result` with `DISPATCH_UNSUPPORTED`.
-5. Find exactly one draft PR from the claimed handoff branch to `staging`, or
+5. Find exactly one draft PR from the claimed job branch to `staging`, or
    create it when none exists. Fail closed on ambiguity or a mismatched head.
-   Verify the PR resolves the exact claimed handoff commit.
+   Verify the PR resolves the exact claimed job commit.
 6. Search PR comments for a stable task-ID/source-revision marker. Reuse an
    existing marked comment. If absent, post exactly one bounded non-review
    comment mentioning `@codex`. Include task ID, branch/commit, owned files,
-   remaining work, tests, acceptance, and instructions to read `AGENTS.md` plus
+   remaining work, acceptance, test expectations, and instructions to read
+   `AGENTS.md` plus
    the immutable framework, push to the PR branch, and never merge or claim
    `integrated`/`user_verified` authority.
 7. Call `dispatch_result` before expiry. On success set `cloudTaskId` to the

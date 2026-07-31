@@ -113,12 +113,14 @@ Its task cards distinguish agent claims, root integration, and user
 verification. Live event files and handoff manifests are local generated state
 and intentionally ignored by Git.
 
-Before every cloud dispatch, run `handoff` and then `dispatch`. The helper
-refuses an unknown dashboard task, missing ownership/acceptance/passing tests,
-a dirty or unpushed branch, an integrated record that does not name exact
-`HEAD`, or a stale/tampered manifest. Worktrees and files persist between local
-tasks; conversation/private context does not. Cloud tasks receive only the
-immutable pushed commit plus explicit handoff.
+Cloud catch-up accepts a never-started published job at its clean pushed base.
+For interrupted work, run `handoff` before dispatch; the worker's short lease
+must have expired and the handoff must be clean and pushed. The helper refuses
+an unknown task, missing ownership/acceptance/test state, a dirty or unpushed
+branch, or a stale/tampered manifest. Passing tests are not required before
+dispatch; the resumed worker runs them. Worktrees and files persist between
+local tasks; conversation/private context does not. Cloud tasks receive only
+the immutable pushed commit plus bounded job context.
 The shared orchestration ledger is discovered through Git's common directory,
 so a handoff prepared in its linked worktree remains visible and its own remote
 ref is validated when root exports from `staging`.

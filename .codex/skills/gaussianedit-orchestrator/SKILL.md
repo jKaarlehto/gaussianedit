@@ -81,11 +81,13 @@ skill defines the root role.
 
 ## Cloud continuation
 
-Cloud dispatch requires a clean, tested, pushed immutable handoff commit and a
-validated manifest. Authorize one dispatch only after the local owner stops.
-The scheduled dispatcher reads the authenticated connector status, claims at
-most one eligible task, then uses the GitHub plugin to open/reuse the immutable
-handoff's draft PR into `staging` and post one bounded idempotent non-review
+Cloud catch-up accepts either a new queued job at its clean pushed immutable
+base or interrupted work whose short lease expired and whose clean pushed
+immutable handoff was already validated. Passing tests are not a dispatch
+prerequisite; the worker performs them. A live worker lease always blocks
+dispatch. The scheduled dispatcher reads the authenticated connector status,
+claims at most one eligible task, then uses the GitHub plugin to open/reuse the
+job branch's draft PR into `staging` and post one bounded idempotent non-review
 `@codex` implementation comment. It records the GitHub PR/comment identifiers
 and PR URL before the dispatch lease expires. There is no native cloud-task API
 fallback and no API key. Missing GitHub writes, unconfirmed Codex cloud repo
@@ -94,6 +96,8 @@ substitute. The exclusive board dispatch execution plus GitHub branch/PR/comment
 facts are authoritative. Do not promise the triggered cloud chat can access the
 connector or acquire a worker lease; later scheduled/root runs reconcile PR and
 commit facts. Dirty, unpushed, inferred, or context-only work fails closed.
+Worker leases default to five minutes and renew only on meaningful changed
+facts, so stopped workers lose exclusivity promptly.
 
 ## Finish a turn
 

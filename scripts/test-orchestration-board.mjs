@@ -69,6 +69,10 @@ for (const content of [scheduledPrompt, dispatchSkill]) {
   assert.match(content, /SYSTEM/);
   assert.match(content, /PRODUCT/);
   assert.match(content, /priority(?:,)? then age/);
+  assert.match(content, /new\s+queued job/i);
+  assert.match(content, /expired lease/i);
+  assert.match(content, /clean\s+pushed\s+immutable\s+handoff/i);
+  assert.match(content, /Passing tests are not a dispatch prerequisite/i);
   assert.doesNotMatch(content, /native Codex cloud task-creation action/i);
   for (const action of ['orchestration_status', 'dispatch_claim', 'dispatch_result', 'search_prs', 'get_pr_info', 'fetch_issue_comments', 'create_pull_request', 'add_comment_to_issue']) {
     assert.match(content, new RegExp(`\\b${action}\\b`), `missing documented connector action ${action}`);
@@ -76,11 +80,12 @@ for (const content of [scheduledPrompt, dispatchSkill]) {
 }
 
 assert.match(scheduledPrompt, /github-pr:<number>:comment:<id>/);
-assert.match(scheduledPrompt, /Do not claim or promise a worker lease/);
+assert.match(scheduledPrompt, /Do not claim or promise a live local worker lease/);
 assert.match(kickoffPrompt, /npm run dev/);
 assert.match(kickoffPrompt, /Microsoft Edge/);
 assert.match(kickoffPrompt, /do not default them to Luna or\s+the cheapest model/);
 assert.match(agentGuide, /\.agents\/plugins\/plugins\/gaussianedit-orchestration\//);
+assert.match(agentGuide, /Worker leases default to five minutes/);
 assert.match(frameworkExport, /dispatch-plugin-manifest/);
 assert.match(frameworkExport, /dispatch-plugin-app/);
 assert.match(frameworkExport, /dispatch-skill/);

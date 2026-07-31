@@ -1,15 +1,15 @@
 {
   "name": "gaussianedit-orchestration",
-  "version": "0.2.0",
-  "description": "Dispatches one immutable GaussianEdit handoff through its authenticated board and the documented GitHub Codex trigger.",
+  "version": "0.2.0+codex.20260731153202",
+  "description": "Dispatches one existing GaussianEdit catch-up job through its authenticated board and the documented GitHub Codex trigger.",
   "author": {
     "name": "GaussianEdit"
   },
   "skills": "./skills/",
   "interface": {
     "displayName": "GaussianEdit Orchestration",
-    "shortDescription": "Dispatch one immutable GaussianEdit handoff safely.",
-    "longDescription": "Reads the authenticated GaussianEdit board, claims one authorized handoff, and uses a draft GitHub pull request plus one idempotent @codex comment to start cloud work.",
+    "shortDescription": "Dispatch one GaussianEdit catch-up job safely.",
+    "longDescription": "Reads the authenticated GaussianEdit board, prioritizes existing system backlog before product work, and uses a draft GitHub pull request plus one idempotent @codex comment to start cloud work.",
     "developerName": "GaussianEdit",
     "category": "Productivity",
     "capabilities": [
@@ -17,8 +17,8 @@
       "Write"
     ],
     "defaultPrompt": [
-      "Use $dispatch-cloud-work to dispatch at most one eligible GaussianEdit handoff.",
-      "Check the private board and return NOOP when no immutable handoff is eligible."
+      "Use $dispatch-cloud-work to dispatch at most one eligible GaussianEdit catch-up job.",
+      "Prioritize existing system work, then product work, and return NOOP when neither a new job nor a clean handoff is eligible."
     ]
   },
   "apps": "./.app.json"
