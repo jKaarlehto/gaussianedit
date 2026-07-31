@@ -97,7 +97,7 @@ export function createCandidateReviewInbox({
     for (const state of values) counts[classifyReviewState(state).key]++;
     const notes = values.filter((state) => String(state.comment).trim()).length;
     summary.textContent =
-      `${counts.ok} OK · ${counts.issue} issue · ${counts.pending} pending · ${notes} notes`;
+      `${counts.ok} accepted · ${counts.issue} issues · ${counts.pending} waiting · ${notes} notes`;
   }
 
   function render(release) {
@@ -115,7 +115,7 @@ export function createCandidateReviewInbox({
     const heading = documentRef.createElement('div');
     heading.className = 'candidate-review-heading';
     const title = documentRef.createElement('b');
-    title.textContent = `Loaded build checks · ${release.id}`;
+    title.textContent = `Acceptance testing · ${release.id}`;
     const summary = documentRef.createElement('span');
     heading.append(title, summary);
     root.append(heading);
@@ -134,7 +134,7 @@ export function createCandidateReviewInbox({
       decision.className = 'candidate-review-decision';
       decision.setAttribute('aria-label', `Acceptance state for ${item.label}`);
       for (const [value, label] of [
-        ['pending', 'PENDING'],
+        ['pending', 'WAITING'],
         ['ok', 'OK'],
         ['issue', 'ISSUE'],
       ]) {

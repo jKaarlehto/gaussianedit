@@ -16,9 +16,9 @@ replacing the running app. The banner asks the user to reload so code and build
 notes always refer to the same loaded version. Collapsing the banner leaves a
 small build chip at the top of the screen.
 
-## Current candidate — 2026.07.30-rc3
+## Current candidate — 2026.07.31-rc4
 
-- The selected mask and highlight stay aligned; orbit hides the 2D raster, and Return to captured view restores the exact pose without a jump.
-- TARGET stays animated with current-frame YOLO hover and target-centered orbit and zoom; pan and flight stay blocked, with no YOLO in Mask or 3D Object.
-- The wider 3D card has no edge slivers; hover freezes its exact orientation, then unhover or promotion resumes the same phase.
-- Retargeting highlights the candidate first, then shows one compact SWITCH TARGET? Replace/Cancel choice without overlapping acquired and new-target HUDs.
+- All-sides scanning now stays on one ordered run and continues after accepted views add new splats.
+- Pause and Resume stay on that same scan; editing or changing the confirmed seed cancels stale work safely.
+- Large-object preparation yields between bounded chunks and stops with a clear limit instead of attempting scene-scale work.
+- The 3D Object controls no longer advertise the disconnected Gaussians display mode.

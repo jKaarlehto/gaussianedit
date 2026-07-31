@@ -1,31 +1,31 @@
 // This is the single source of truth for the in-app build notice.
 // Keep the notes short and describe behavior a user can actually verify.
 export const releaseMetadata = Object.freeze({
-  id: '2026.07.30-rc3',
+  id: '2026.07.31-rc4',
   status: 'candidate',
-  publishedAt: '2026-07-30T22:59:12+03:00',
+  publishedAt: '2026-07-31T14:25:39+03:00',
   notes: Object.freeze([
-    'The selected mask and highlight stay aligned; orbit hides the 2D raster, and Return to captured view restores the exact pose without a jump.',
-    'TARGET stays animated with current-frame YOLO hover and target-centered orbit and zoom; pan and flight stay blocked, with no YOLO in Mask or 3D Object.',
-    'The wider 3D card has no edge slivers; hover freezes its exact orientation, then unhover or promotion resumes the same phase.',
-    'Retargeting highlights the candidate first, then shows one compact SWITCH TARGET? Replace/Cancel choice without overlapping acquired and new-target HUDs.',
+    'All-sides scanning now stays on one ordered run and continues after accepted views add new splats.',
+    'Pause and Resume stay on that same scan; editing or changing the confirmed seed cancels stale work safely.',
+    'Large-object preparation yields between bounded chunks and stops with a clear limit instead of attempting scene-scale work.',
+    'The 3D Object controls no longer advertise the disconnected Gaussians display mode.',
   ]),
   reviewItems: Object.freeze([
     Object.freeze({
-      id: 'selection-return-alignment',
-      label: 'Does orbit hide the aligned 2D raster, then Return to captured view restore the exact pose without a jump?',
+      id: 'scan-runtime-continues-after-growth',
+      label: 'After an accepted view adds splats, does scanning continue through the later angles?',
     }),
     Object.freeze({
-      id: 'target-controls-yolo',
-      label: 'Does TARGET keep current-frame YOLO hover and target-centered orbit/zoom while blocking pan, flight, and YOLO in Mask or 3D Object?',
+      id: 'scan-runtime-pause-resume',
+      label: 'Does Pause then Resume continue the same scan without duplicate tray work or restarted counters?',
     }),
     Object.freeze({
-      id: 'object-card-continuity',
-      label: 'Is the wider 3D card free of slivers, with hover pausing exactly and unhover or promotion resuming the same phase?',
+      id: 'scan-runtime-cancel-on-edit',
+      label: 'Does editing the starting mask stop the scan promptly and require Use this object again?',
     }),
     Object.freeze({
-      id: 'retarget-single-decision',
-      label: 'Does retargeting highlight first, then show one compact SWITCH TARGET? Replace/Cancel choice without overlapping HUDs?',
+      id: 'object-view-single-mode',
+      label: 'Are the disconnected Gaussians toggle and its unavailable-mode message gone from 3D Object?',
     }),
   ]),
 });

@@ -44,7 +44,7 @@ tranches. Treat their live feedback as the primary visual acceptance signal.
 - When the user says an item failed, it failed. Do not average it with shell
   success or keep advertising it because most of the underlying code exists.
 - Distinguish clearly between specified, implemented, shell-verified,
-  integrated, and Edge-verified behavior. A design report is not an
+  integrated, and acceptance-tested behavior. A design report is not an
   implementation.
 
 ## Current integration baseline
@@ -386,12 +386,13 @@ they do not become interchangeable confidence numbers.
   branch is never integration proof.
 - `feat/object-refinement` is the accumulated candidate branch. Agents never
   merge into it directly: root may integrate multiple reviewed tranches there,
-  publish one named candidate, collect one bounded Edge acceptance pass from
-  the user, and only then advance the accepted candidate to stable/main.
+  publish one named candidate, collect one bounded Acceptance testing pass in
+  Microsoft Edge from the user, and only then advance the accepted candidate
+  to stable/main.
 - P0/P1/P2 express priority, not completion or user ownership. A dashboard
   request for user action appears only when a named candidate containing that
-  item is published; review, integration, blocker resolution, reclaim, and
-  scheduling remain agent/root actions.
+  item is published for Acceptance testing; review, integration, blocker
+  resolution, reclaim, and scheduling remain agent/root actions.
 - The root orchestrator owns task partitioning, patch review, integration,
   commits, pushes, candidate publication, and feedback routing. Implementation
   agents do not merge, publish, or update release metadata unless assigned that
@@ -408,8 +409,8 @@ they do not become interchangeable confidence numbers.
     adversarial review passes.
 - Keep at most one owner in `main.js` and one independent infrastructure or
   research lane active alongside an independent reviewer. Do not start another
-  visible feature while a P0 tranche is failing its focused tests or live Edge
-  flow.
+  visible feature while a P0 tranche is failing its focused tests or live
+  Acceptance testing flow in Microsoft Edge.
 - Finish the smallest coherent user-testable tranche, review it, publish its
   banner questions, and only then expand scope. Do not accumulate an entire
   session of unrelated WIP behind one candidate.
@@ -434,11 +435,11 @@ they do not become interchangeable confidence numbers.
   `files`, `status`, `summary`, `tests`, `blockers`, `next`, `reviewItems`,
   `commit`, `timestamp`, and authority. Worker events are always
   `agent_claimed`; only the root records `integrated` after review/gates and
-  `user_verified` after explicit Edge acceptance. The root checks `inbox`
-  after agent turns and owns dashboard/release materialization. Dashboard task
+  `user_verified` after an explicit Acceptance testing result. The root checks
+  `inbox` after agent turns and owns dashboard/release materialization. Dashboard task
   cards must show these three authority levels distinctly. The dashboard is an
   index, never a substitute for repository state, test output, patch review,
-  or Edge validation.
+  or Acceptance testing.
 - Do not hand off work that is near enough to completion for the current owner
   to finish and close out cheaply. A handoff is only for genuinely unfinished
   work at a clean, pushed, immutable commit with a matching unfinished worker
@@ -511,12 +512,12 @@ they do not become interchangeable confidence numbers.
 - After work, report changed files, behavior, tests and results, remaining
   risks, and the commit hash if committed. Every implementation agent must also
   return one to five short, falsifiable questions about user-visible behavior
-  for Edge review. Each question carries a stable item ID, owning agent, and
+  for Acceptance testing. Each question carries a stable item ID, owning agent, and
   affected workspace. If the patch has no user-visible change, report exactly
   `none: no user-visible change`.
 - Research-only agents submit no visual review questions unless their work
   lands behavior the user can actually test.
-- Treat new live Edge feedback as the current acceptance evidence. State
+- Treat new live Microsoft Edge feedback as the current Acceptance testing evidence. State
   explicitly which older instruction it supersedes, and update focused tests
   and UI documentation with the resolved contract. Do not keep implementing a
   stale interpretation in parallel.
@@ -591,10 +592,10 @@ feature bundle, or the end of the session.
    integration review and all required shell gates pass.
 7. Mirror the exact label and note bullets in `STABLE_UPDATES.md`.
 8. Run the full shell verification gate again.
-9. Tell the user what changed and provide a short Edge validation checklist.
+9. Tell the user what changed and provide a short Acceptance testing checklist for Microsoft Edge.
 
-Change a build to `stable` only after the agreed shell checks and live Edge
-workflow pass. Never update the banner for unreviewed, unmerged, speculative,
+Change a build to `stable` only after the agreed shell checks and Acceptance
+testing workflow pass in Microsoft Edge. Never update the banner for unreviewed, unmerged, speculative,
 or agent-only work.
 
 Do not mutate an already-reviewed candidate in place. Publish a new candidate
