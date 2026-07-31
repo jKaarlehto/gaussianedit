@@ -157,9 +157,12 @@ assert.match(
   objectPreview,
   /closest\('\.buffer-card-viewport'\)[\s\S]*?clippedLeft = Math\.max\(target\.left, clip\.left, canvas\.left\)/,
 );
-assert.match(html, /data-object-display="confidence" aria-pressed="true"/);
-assert.match(html, /data-object-display="gaussians" aria-pressed="false" disabled/);
-assert.match(html, /actual Gaussian rendering is not connected yet/i);
+assert.doesNotMatch(
+  html,
+  /data-object-display="gaussians"|actual Gaussian rendering is not connected yet/i,
+  'the 3D Object rail must not advertise a disabled renderer mode',
+);
+assert.match(main, /const objectDisplayMode = 'confidence'/);
 assert.ok(
   html.indexOf('id="visibleObjectGate"') < html.indexOf('id="selectionProps"'),
   'confirmation HUD must remain viewport-level, never inside the right drawer',

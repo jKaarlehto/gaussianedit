@@ -6,6 +6,11 @@ await testOrderedPipeline();
 await testCancellationCleanup();
 await testMaskEditRestart();
 await testFailureCleanup();
+await testDenseRenderSequence();
+await testStaleRevisionCancellation();
+await testProviderCancelledBeforeSessionCleanup();
+await testProviderBeginCancelledBeforeHandle();
+await testDependencyAbortCancelsProviderWithCanonicalStaleReason();
 
 console.log('scan coordinator ordering, cancellation, restart, and cleanup: ok');
 
@@ -285,6 +290,237 @@ async function testFailureCleanup() {
     events.slice(-3).map(({ type }) => type),
     ['cleanup-started', 'cleanup-complete', 'scan-failed'],
   );
+}
+
+async function testDenseRenderSequence() {
+  const rendered = [];
+  const tracked = [];
+  const events = [];
+  const coordinator = createScanCoordinator({
+    async renderView(view) {
+      rendered.push(view.id);
+      return { id: view.id, rgb: `rgb:${view.id}` };
+    },
+    async trackMask({ views, renderViews, frames }) {
+      assert.deepEqual(views.map(({ id }) => id), ['key-left', 'key-right']);
+      assert.deepEqual(
+        renderViews.map(({ id }) => id),
+        ['bridge-left', 'key-left', 'bridge-right', 'key-right'],
+      );
+      assert.deepEqual(frames.map(({ id }) => id), [
+        'bridge-left',
+        'key-left',
+        'bridge-right',
+        'key-right',
+      ]);
+      return views.map(({ id }) => {
+        tracked.push(id);
+        return { viewId: id };
+      });
+    },
+    async liftMask({ view, frame }) {
+      assert.equal(frame.id, view.id);
+      assert.equal(frame.rgb, `rgb:${view.id}`);
+      return { viewId: view.id };
+    },
+    async fuseEvidence({ view, frame }) {
+      assert.equal(frame.id, view.id);
+      assert.equal(frame.rgb, `rgb:${view.id}`);
+      return view.id;
+    },
+    onEvent(event) {
+      events.push(event);
+    },
+  });
+
+  const result = await coordinator.start({
+    views: [{ id: 'key-left' }, { id: 'key-right' }],
+    renderViews: [
+      { id: 'bridge-left' },
+      { id: 'key-left' },
+      { id: 'bridge-right' },
+      { id: 'key-right' },
+    ],
+  });
+
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(rendered, [
+    'bridge-left',
+    'key-left',
+    'bridge-right',
+    'key-right',
+  ]);
+  assert.deepEqual(tracked, ['key-left', 'key-right']);
+  assert.deepEqual(result.counts, {
+    rendered: 4,
+    tracked: 2,
+    lifted: 2,
+    fused: 2,
+  });
+  assert.deepEqual(
+    events
+      .filter(({ type, phase }) => type === 'progress' && phase === 'rendering')
+      .map(({ completed, total }) => [completed, total]),
+    [[1, 4], [2, 4], [3, 4], [4, 4]],
+  );
+}
+
+async function testStaleRevisionCancellation() {
+  const disposed = [];
+  const events = [];
+  let current = true;
+  let trackerCalls = 0;
+  const coordinator = createScanCoordinator({
+    async renderView(view) {
+      current = false;
+      return disposable(`frame:${view.id}`, disposed);
+    },
+    async trackMask() {
+      trackerCalls++;
+      return [];
+    },
+    async liftMask() {
+      assert.fail('stale work must not lift');
+    },
+    async fuseEvidence() {
+      assert.fail('stale work must not fuse');
+    },
+    onEvent(event) {
+      events.push(event);
+    },
+  });
+
+  const result = await coordinator.start({
+    views: [{ id: 'stale' }],
+    isCurrent: () => current,
+  });
+
+  assert.equal(result.status, 'cancelled');
+  assert.equal(result.reason, 'stale-revision');
+  assert.equal(trackerCalls, 0);
+  assert.deepEqual(disposed, ['frame:stale']);
+  assert.ok(events.some(
+    ({ type, reason }) => type === 'cancel-requested'
+      && reason === 'stale-revision',
+  ));
+}
+
+async function testProviderCancelledBeforeSessionCleanup() {
+  const order = [];
+  const trackingStarted = deferred();
+  let unblockTracking;
+  const coordinator = createScanCoordinator({
+    async renderView() {
+      return {};
+    },
+    async trackMask({ signal }) {
+      return {
+        results: (async function* blockedResults() {
+          trackingStarted.resolve();
+          await new Promise((resolve, reject) => {
+            unblockTracking = resolve;
+            signal.addEventListener('abort', () => {
+              order.push('signal-aborted');
+              reject(abortError());
+            }, { once: true });
+          });
+        })(),
+        cancel() {
+          order.push('provider-cancel');
+          unblockTracking?.();
+        },
+        close() {
+          order.push('provider-close');
+        },
+      };
+    },
+    async liftMask() {
+      assert.fail('cancelled tracking must not lift');
+    },
+    async fuseEvidence() {
+      assert.fail('cancelled tracking must not fuse');
+    },
+  });
+
+  const running = coordinator.start({ views: [{ id: 'blocked' }] });
+  await trackingStarted.promise;
+  const result = await coordinator.cancel('mask-edit');
+  assert.equal(result.status, 'cancelled');
+  assert.deepEqual(order, ['provider-cancel', 'signal-aborted', 'provider-close']);
+  await running;
+}
+
+async function testProviderBeginCancelledBeforeHandle() {
+  const order = [];
+  const beginEntered = deferred();
+  const coordinator = createScanCoordinator({
+    async renderView() {
+      return {};
+    },
+    async trackMask({ registerPendingCancel }) {
+      await new Promise((resolve, reject) => {
+        registerPendingCancel(() => {
+          order.push('provider-begin-cancel');
+          reject(abortError());
+        });
+        beginEntered.resolve();
+      });
+      assert.fail('cancelled provider begin must not return a tracker');
+    },
+    async liftMask() {
+      assert.fail('cancelled provider begin must not lift');
+    },
+    async fuseEvidence() {
+      assert.fail('cancelled provider begin must not fuse');
+    },
+  });
+
+  const running = coordinator.start({ views: [{ id: 'beginning' }] });
+  await beginEntered.promise;
+  const result = await coordinator.cancel('mask-edit');
+  assert.equal(result.status, 'cancelled');
+  assert.deepEqual(order, ['provider-begin-cancel']);
+  await running;
+}
+
+async function testDependencyAbortCancelsProviderWithCanonicalStaleReason() {
+  const order = [];
+  let current = true;
+  const coordinator = createScanCoordinator({
+    async renderView(view) {
+      return { id: view.id };
+    },
+    async trackMask({ views }) {
+      return {
+        results: views.map(({ id }) => ({ viewId: id })),
+        cancel(reason) {
+          order.push(`provider-cancel:${reason}`);
+        },
+        close() {
+          order.push('provider-close');
+        },
+      };
+    },
+    async liftMask() {
+      current = false;
+      throw new DOMException('Scan revision is stale', 'AbortError');
+    },
+    async fuseEvidence() {
+      assert.fail('stale lifted evidence must not fuse');
+    },
+  });
+
+  const result = await coordinator.start({
+    views: [{ id: 'stale-key' }],
+    isCurrent: () => current,
+  });
+
+  assert.equal(result.status, 'cancelled');
+  assert.equal(result.reason, 'stale-revision');
+  assert.deepEqual(order, [
+    'provider-cancel:stale-revision',
+    'provider-close',
+  ]);
 }
 
 function disposable(name, disposed) {

@@ -4,6 +4,11 @@
  * can all satisfy the same proposal contract.
  */
 
+import {
+  compactLookupSlot,
+  createCompactIndexLookup,
+} from './compactIndexLookup.js';
+
 export function parseCalibratedViewSet(json, filename = 'camera metadata') {
   if (!json || typeof json !== 'object') throw new Error('Camera metadata must be a JSON object.');
   const sourceFrames = Array.isArray(json.frames) ? json.frames
@@ -95,15 +100,18 @@ export function createViewEvidence(
       ? activeIndices
       : Uint32Array.from(activeIndices))
     : null;
-  const indexLookup = globalIndices
-    ? (sharedIndexLookup ?? new Uint32Array(splatCount))
-    : null;
-  if (indexLookup && !sharedIndexLookup) {
+  if (globalIndices) {
     for (let slot = 0; slot < globalIndices.length; slot++) {
-      // Zero means absent; local slots are stored one-based.
-      indexLookup[globalIndices[slot]] = slot + 1;
+      if (globalIndices[slot] >= splatCount) {
+        throw new RangeError(
+          `Evidence Gaussian id ${globalIndices[slot]} is outside scene count ${splatCount}`,
+        );
+      }
     }
   }
+  const indexLookup = globalIndices
+    ? (sharedIndexLookup ?? createCompactIndexLookup(globalIndices))
+    : null;
   return {
     support: new Float32Array(localCount),
     observations: new Float32Array(localCount),
@@ -225,8 +233,7 @@ export function fuseViewEvidence(evidence, {
 }
 
 function evidenceSlot(evidence, globalIndex) {
-  if (!evidence.indexLookup) return globalIndex;
-  return evidence.indexLookup[globalIndex] - 1;
+  return compactLookupSlot(evidence.indexLookup, globalIndex);
 }
 
 function normalizeGroup(group) {

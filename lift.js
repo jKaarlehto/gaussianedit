@@ -15,6 +15,12 @@
  * the tolerance is a slider. See README for the exact-depth upgrade.
  */
 
+import {
+  compactLookupSlot,
+  createCompactIndexLookup,
+  createCompactIndexLookupAsync,
+} from './compactIndexLookup.js';
+
 const TILE = 4; // px per depth tile
 
 /**
@@ -22,7 +28,7 @@ const TILE = 4; // px per depth tile
  * projection and evidence accumulator in a scan. Zero means "outside ROI";
  * stored slots are one-based so local slot zero remains representable.
  */
-export function createProjectionIndexSpace(count, indices = null) {
+export function createProjectionIndexSpace(count, indices = null, options = {}) {
   if (!indices) return {
     globalIndices: null,
     indexLookup: null,
@@ -31,10 +37,48 @@ export function createProjectionIndexSpace(count, indices = null) {
   const globalIndices = indices instanceof Uint32Array
     ? indices
     : Uint32Array.from(indices);
-  const indexLookup = new Uint32Array(count);
-  for (let slot = 0; slot < globalIndices.length; slot++) {
-    indexLookup[globalIndices[slot]] = slot + 1;
-  }
+  validateProjectionIndices(count, globalIndices);
+  const indexLookup = createCompactIndexLookup(globalIndices, options);
+  return {
+    globalIndices,
+    indexLookup,
+    localCount: globalIndices.length,
+  };
+}
+
+/**
+ * Cancellable variant for building a large resident-cutout lookup without
+ * monopolizing the main thread. The allocation is still rejected up front
+ * when its explicit entry or byte budget would be exceeded.
+ */
+export async function createProjectionIndexSpaceAsync(
+  count,
+  indices = null,
+  onProgress = () => {},
+  shouldCancel = () => false,
+  options = {},
+) {
+  if (!indices) return {
+    globalIndices: null,
+    indexLookup: null,
+    localCount: count,
+  };
+  const globalIndices = indices instanceof Uint32Array
+    ? indices
+    : Uint32Array.from(indices);
+  await validateProjectionIndicesAsync(
+    count,
+    globalIndices,
+    (progress) => onProgress(progress * 0.2),
+    shouldCancel,
+    options,
+  );
+  const indexLookup = await createCompactIndexLookupAsync(
+    globalIndices,
+    (progress) => onProgress(0.2 + progress * 0.8),
+    shouldCancel,
+    options,
+  );
   return {
     globalIndices,
     indexLookup,
@@ -44,8 +88,7 @@ export function createProjectionIndexSpace(count, indices = null) {
 
 /** Resolve a scene-global Gaussian id to this projection's compact slot. */
 export function projectionSlot(projection, globalIndex) {
-  if (!projection.indexLookup) return globalIndex;
-  return projection.indexLookup[globalIndex] - 1;
+  return compactLookupSlot(projection.indexLookup, globalIndex);
 }
 
 /**
@@ -856,4 +899,50 @@ function integralRectSum(integral, stride, x1, y1, x2, y2) {
     - integral[y1 * stride + x2]
     - integral[y2 * stride + x1]
     + integral[y1 * stride + x1];
+}
+
+function validateProjectionIndices(count, indices) {
+  if (!Number.isSafeInteger(count) || count < 0 || count > 0xffff_ffff) {
+    throw new RangeError('Projection scene count must be an unsigned 32-bit integer');
+  }
+  for (let slot = 0; slot < indices.length; slot++) {
+    if (indices[slot] >= count) {
+      throw new RangeError(
+        `Projection Gaussian id ${indices[slot]} is outside scene count ${count}`,
+      );
+    }
+  }
+}
+
+async function validateProjectionIndicesAsync(
+  count,
+  indices,
+  onProgress,
+  shouldCancel,
+  {
+    chunkSize = 32_000,
+    yieldTask = () => new Promise((resolve) => setTimeout(resolve, 0)),
+  } = {},
+) {
+  if (!Number.isSafeInteger(count) || count < 0 || count > 0xffff_ffff) {
+    throw new RangeError('Projection scene count must be an unsigned 32-bit integer');
+  }
+  if (!Number.isSafeInteger(chunkSize) || chunkSize <= 0) {
+    throw new RangeError('chunkSize must be a positive integer');
+  }
+  for (let start = 0; start < indices.length; start += chunkSize) {
+    if (shouldCancel()) {
+      throw new DOMException('Projection index validation superseded', 'AbortError');
+    }
+    const end = Math.min(indices.length, start + chunkSize);
+    for (let slot = start; slot < end; slot++) {
+      if (indices[slot] >= count) {
+        throw new RangeError(
+          `Projection Gaussian id ${indices[slot]} is outside scene count ${count}`,
+        );
+      }
+    }
+    onProgress(end / Math.max(1, indices.length));
+    if (end < indices.length) await yieldTask();
+  }
 }

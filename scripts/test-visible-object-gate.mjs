@@ -119,7 +119,12 @@ assert.doesNotMatch(main, /function recaptureCurrentTarget/);
 assert.match(main, /ui\.confirmVisibleObject\.disabled = true/);
 assert.match(main, /ui\.selectionOutline\.hidden = true/);
 assert.match(main, /scanTray\.begin\(\{[\s\S]*?pending:\s*true/);
-assert.match(main, /scheduleAutomaticMultiview\('Visible object confirmed', 0\)/);
+assert.match(main, /void startMultiviewRefinement\(\)/);
+assert.doesNotMatch(
+  main,
+  /setWorkspace\('object'\);[\s\S]{0,800}scheduleAutomaticMultiview\('Visible object confirmed'/,
+  'confirmation must not move the live camera before the immutable scan start is consumed',
+);
 assert.match(main, /automaticMultiviewTimer = setTimeout\(startMultiviewRefinement, 750\)/);
 assert.match(main, /exposeConfirmedScanFailure\([\s\S]*?'Retry scan'/);
 assert.match(
@@ -129,6 +134,34 @@ assert.match(
 assert.match(
   main,
   /async function startMultiviewRefinement[\s\S]*?consumeVisibleObjectStart\(active\.visibleObjectGate, revision\)/,
+);
+assert.match(
+  main,
+  /scanCoordinator\.start\(\{[\s\S]*?views:\s*session\.views,[\s\S]*?renderViews:\s*session\.trackingViews,[\s\S]*?isCurrent:\s*\(\) => coordinatedScanIsCurrent\(session\)/,
+  'the accepted immutable revision must own one coordinated dense-render/key-evidence run',
+);
+assert.match(
+  main,
+  /function coordinatedScanIsCurrent[\s\S]*?return scanSeedIsCurrent\(session\);/,
+  'late coordinator results must validate the immutable seed separately from fused growth',
+);
+assert.match(
+  main,
+  /function scanSeedIsCurrent[\s\S]*?active\.maskRevision !== seed\.maskRevision[\s\S]*?active\.selectionRevision !== seed\.selectionRevision[\s\S]*?currentSelectionFrameParity\(active\)\.ok/,
+  'scan staleness must reject changed frame/mask/selection provenance and matrix parity',
+);
+const coordinatedCurrentBody = main.match(
+  /function coordinatedScanIsCurrent\(session\) \{([\s\S]*?)\n\}/,
+)?.[1] ?? '';
+assert.doesNotMatch(
+  coordinatedCurrentBody,
+  /selectionMatchesConfirmedSnapshot/,
+  'scan-owned evidence additions must not invalidate the immutable confirmed seed',
+);
+assert.match(
+  main,
+  /pauseMultiviewButton\.addEventListener\('click',[\s\S]*?session\.coordinatorStarted[\s\S]*?session\.resumeCoordinator\?\.\(\)[\s\S]*?return;/,
+  'resuming a coordinated scan must never start the retired per-view pipeline in parallel',
 );
 assert.doesNotMatch(
   main,

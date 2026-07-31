@@ -1386,13 +1386,6 @@
   body:not([data-workspace="object"]) #objectPreviewHud {
     display: none !important;
   }
-  #objectDisplayMode {
-    margin-bottom: 7px;
-  }
-  #objectDisplayMode button:disabled {
-    opacity: .42;
-    cursor: not-allowed;
-  }
 </style>
 </head>
 <body data-exploration="false" data-viewfinder-locked="false" data-scan-active="false"
@@ -1642,7 +1635,8 @@
       <button id="sceneFlightToggle" class="toggle" aria-pressed="false"
         data-tip="Unlock pointer-look and flight without discarding the current object draft">Explore scene</button>
       <button id="exploreSelectionContext" class="toggle" aria-pressed="true"
-        data-tip="Keep the current object faintly visible as context while exploring">Selection context</button>
+        data-tip="Keep the current object faintly visible as context while exploring"
+        hidden>Show selected object</button>
       <div class="row">
         <button id="homeView"
           data-tip="Return to your saved home camera">Home</button>
@@ -1670,15 +1664,6 @@
 
     <section id="objectWorkspaceControls">
       <h3>3D object</h3>
-      <div class="seg" id="objectDisplayMode" role="group" aria-label="3D object display">
-        <button data-object-display="confidence" aria-pressed="true"
-          data-tip="Evidence confidence and uncertainty view">Confidence</button>
-        <button data-object-display="gaussians" aria-pressed="false" disabled
-          data-tip="Unavailable until the isolated cutout is connected to the actual Gaussian renderer">Gaussians</button>
-      </div>
-      <div class="note" id="objectDisplayCapability">
-        Confidence view active · actual Gaussian rendering is not connected yet.
-      </div>
       <div id="objectWorkspaceControlHost"></div>
     </section>
 

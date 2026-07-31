@@ -17,7 +17,7 @@ import {
   listSelectionSources,
 } from './selectionSources.js';
 import {
-  createProjectionIndexSpace,
+  createProjectionIndexSpaceAsync,
   findOccluderRevealCandidates,
   projectionSlot,
   projectSplatsAsync,
@@ -39,6 +39,8 @@ import { HudEffects } from './hudEffects.js';
 import { ClassicRegionProposer } from './classicProposals.js';
 import { SegmentDock } from './segmentDock.js';
 import { ScanTray } from './scanTray.js';
+import { createScanCoordinator } from './scanCoordinator.js';
+import { planScanMemory, ScanMemoryLedger } from './scanMemoryBudget.js';
 import {
   analyzeSelectedObject,
   generateSyntheticOrbitViews,
@@ -117,6 +119,8 @@ import { positionRetargetHud } from './retargetHud.js';
 
 const SAM_TRACKING_NATIVE = 832; // browser capture; SAM 3.1 resizes internally
 const MAX_STAGED_TRACKING_BYTES = 128 * 1024 * 1024;
+const MAX_REFINEMENT_ROI_VISITS = 1_200_000;
+const REFINEMENT_ROI_YIELD_INTERVAL = 16_384;
 const FALLBACK_CAPTURE_MAX_POINTS = 240_000;
 const VIEW_SETTLE_MS = 280;
 
@@ -695,7 +699,7 @@ const state = {
   },
 };
 const bufferPreviewStore = createBufferPreviewStore();
-let objectDisplayMode = 'confidence';
+const objectDisplayMode = 'confidence';
 const workspaceController = new WorkspaceController('scene');
 let activeSelectionTimer = 0;
 let encodingRippleStartedAt = 0;
@@ -818,6 +822,7 @@ function syncExploreSelectionContext() {
     'aria-pressed',
     String(state.exploreSelectionContext),
   );
+  ui.exploreSelectionContext.hidden = !state.selection.size;
   ui.exploreSelectionContext.disabled = !state.selection.size;
   if (!state.exploration) {
     ui.sceneFlightToggle.textContent = state.active ? 'Unlock and fly' : 'Explore scene';
@@ -953,7 +958,7 @@ function setExplorationMode(enabled, { activateWorkspace = true } = {}) {
   document.body.dataset.exploration = String(next);
   ui.sceneFlightToggle.setAttribute('aria-pressed', String(next));
   ui.sceneFlightToggle.textContent = next
-    ? 'Freeze selection view'
+    ? 'Select from this view'
     : state.active ? 'Unlock and fly' : 'Explore scene';
   ui.hint.textContent = next
     ? 'Scene flight owns mouse and movement keys · Tab cycles workspaces.'
@@ -1181,20 +1186,6 @@ function updateObjectPreviewSurfaces(payload) {
 function clearObjectPreviewBuffer() {
   objectCardHasValidPreview = false;
   bufferPreviewStore.clear(BUFFER_PREVIEW_IDS.OBJECT);
-}
-for (const button of document.querySelectorAll('[data-object-display]')) {
-  button.addEventListener('click', () => {
-    if (button.disabled || button.dataset.objectDisplay !== 'confidence') return;
-    objectDisplayMode = 'confidence';
-    for (const option of document.querySelectorAll('[data-object-display]')) {
-      option.setAttribute(
-        'aria-pressed',
-        String(option.dataset.objectDisplay === objectDisplayMode),
-      );
-    }
-    ui.objectPreviewHud.dataset.displayMode = objectDisplayMode;
-    ui.objectWorkspaceCard.dataset.displayMode = objectDisplayMode;
-  });
 }
 ui.objectPreviewHud.dataset.displayMode = objectDisplayMode;
 ui.objectWorkspaceCard.dataset.displayMode = objectDisplayMode;
@@ -2816,6 +2807,13 @@ const projectedPromptProvider = new ProjectedPromptPropagationProvider(
 const propagationProvider = new MaskPropagationRouter({
   temporal: new TemporalSamTrackingProvider(),
   fallback: projectedPromptProvider,
+});
+const scanCoordinator = createScanCoordinator({
+  renderView: renderCoordinatedScanView,
+  trackMask: beginCoordinatedTracking,
+  liftMask: liftCoordinatedTrackedMask,
+  fuseEvidence: fuseCoordinatedEvidence,
+  onEvent: handleScanCoordinatorEvent,
 });
 
 setWork({
@@ -6225,9 +6223,22 @@ function cameraFromSelectionFrame(frame) {
   return source;
 }
 
-function collectRefinementProjectionIndices(analysis) {
+async function collectRefinementProjectionIndices(
+  analysis,
+  {
+    maxSplats,
+    canceled = () => false,
+    maxVisits = MAX_REFINEMENT_ROI_VISITS,
+  },
+) {
   const grid = state.grid;
   if (!grid?.start || !grid?.items) return null;
+  if (!Number.isSafeInteger(maxSplats) || maxSplats <= 0) {
+    throw new RangeError('Projection ROI maxSplats must be a positive integer');
+  }
+  if (!Number.isSafeInteger(maxVisits) || maxVisits <= 0) {
+    throw new RangeError('Projection ROI maxVisits must be a positive integer');
+  }
   // Hidden object surfaces and immediately adjacent distractors live in a
   // compact 3D neighborhood. Projecting this ROI avoids re-running millions
   // of unrelated scene points in JavaScript for every tracked angle.
@@ -6242,30 +6253,75 @@ function collectRefinementProjectionIndices(analysis) {
   const iy1 = clampCell(Math.floor((max.y - grid.minY) / grid.cell), grid.ny);
   const iz1 = clampCell(Math.floor((max.z - grid.minZ) / grid.cell), grid.nz);
   const indices = [];
+  const priorityLimit = Math.floor(maxSplats * 0.82);
+  let selectedOrdinal = 0;
+  const selectedStride = Math.max(
+    1,
+    state.selection.size / Math.max(1, priorityLimit),
+  );
+  let nextSelected = 0;
+  let work = 0;
+  const recordVisit = () => {
+    work++;
+    if (work > maxVisits) {
+      throw new RangeError(
+        `Object scan preparation exceeded its ${maxVisits.toLocaleString()} ROI visit limit.`,
+      );
+    }
+    return work % REFINEMENT_ROI_YIELD_INTERVAL === 0;
+  };
+  const yieldAtCheckpoint = async () => {
+    if (canceled()) {
+      throw new DOMException('Projection ROI collection superseded', 'AbortError');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (canceled()) {
+      throw new DOMException('Projection ROI collection superseded', 'AbortError');
+    }
+  };
+  for (const index of state.selection) {
+    if (indices.length >= priorityLimit) break;
+    if (selectedOrdinal + 0.5 >= nextSelected) {
+      indices.push(index);
+      nextSelected += selectedStride;
+    }
+    selectedOrdinal++;
+    if (recordVisit()) await yieldAtCheckpoint();
+  }
+  const priorityCount = indices.length;
+  const contextCapacity = maxSplats - priorityCount;
+  let contextSeen = 0;
   for (let iz = iz0; iz <= iz1; iz++) {
     for (let iy = iy0; iy <= iy1; iy++) {
       for (let ix = ix0; ix <= ix1; ix++) {
+        if (recordVisit()) await yieldAtCheckpoint();
         const cell = (iz * grid.ny + iy) * grid.nx + ix;
         for (let cursor = grid.start[cell]; cursor < grid.start[cell + 1]; cursor++) {
           const index = grid.items[cursor];
+          if (state.selection.has(index)) continue;
           const x = state.splat.centers[index * 3];
           const y = state.splat.centers[index * 3 + 1];
           const z = state.splat.centers[index * 3 + 2];
           if (x >= min.x && x <= max.x
             && y >= min.y && y <= max.y
-            && z >= min.z && z <= max.z) indices.push(index);
+            && z >= min.z && z <= max.z) {
+            contextSeen++;
+            if (indices.length < maxSplats) {
+              indices.push(index);
+            } else if (contextCapacity > 0) {
+              // Deterministic bounded reservoir sampling preserves coverage
+              // across the complete ROI without materializing every candidate.
+              let hash = contextSeen >>> 0;
+              hash = Math.imul(hash ^ (hash >>> 16), 0x7feb352d);
+              hash = Math.imul(hash ^ (hash >>> 15), 0x846ca68b);
+              hash = (hash ^ (hash >>> 16)) >>> 0;
+              const slot = hash % contextSeen;
+              if (slot < contextCapacity) indices[priorityCount + slot] = index;
+            }
+          }
+          if (recordVisit()) await yieldAtCheckpoint();
         }
       }
-    }
-  }
-  // Robust bounds intentionally ignore floaters. Preserve any explicitly
-  // selected outlier as an identity anchor even when it falls outside the ROI.
-  for (const index of state.selection) {
-    const x = state.splat.centers[index * 3];
-    const y = state.splat.centers[index * 3 + 1];
-    const z = state.splat.centers[index * 3 + 2];
-    if (x < min.x || x > max.x || y < min.y || y > max.y || z < min.z || z > max.z) {
-      indices.push(index);
     }
   }
   return Uint32Array.from(indices);
@@ -6290,13 +6346,24 @@ pauseMultiviewButton.addEventListener('click', () => {
   session.paused = !session.paused;
   pauseMultiviewButton.textContent = session.paused ? 'Resume' : 'Pause';
   pauseMultiviewButton.setAttribute('aria-pressed', String(session.paused));
-  if (!session.paused && !session.waitingReview) processNextMultiviewView(session);
+  if (!session.paused && session.coordinatorStarted) {
+    session.resumeCoordinator?.();
+    session.resumeCoordinator = null;
+    return;
+  }
+  if (!session.paused && !session.waitingReview) {
+    processNextMultiviewView(session);
+  }
 });
 cancelMultiviewButton.addEventListener('click', () => {
   const session = state.multiview.session;
   if (!session) return;
   session.canceled = true;
-  finishMultiviewSession(session, 'Multiview refinement stopped');
+  if (session.coordinatorStarted) {
+    void scanCoordinator.cancel('user');
+  } else {
+    finishMultiviewSession(session, 'All-sides scan stopped');
+  }
 });
 document.getElementById('acceptMultiview').addEventListener('click', () => {
   resolveMultiviewProposal(true);
@@ -6428,10 +6495,10 @@ async function startMultiviewRefinement() {
   // structures with barely half of the detail SAM 3.1 can consume.
   const viewportAspect = renderer.domElement.width
     / Math.max(1, renderer.domElement.height);
-  const width = viewportAspect >= 1
+  let width = viewportAspect >= 1
     ? Math.round(SAM_TRACKING_NATIVE * viewportAspect)
     : SAM_TRACKING_NATIVE;
-  const height = viewportAspect >= 1
+  let height = viewportAspect >= 1
     ? SAM_TRACKING_NATIVE
     : Math.round(SAM_TRACKING_NATIVE / viewportAspect);
   const analysis = analyzeSelectedObject({
@@ -6439,27 +6506,142 @@ async function startMultiviewRefinement() {
     selection: state.selection,
     camera: scanSourceCamera,
   });
-  const syntheticViews = generateSyntheticOrbitViews({
+  let memoryPlan = planScanMemory({
+    width,
+    height,
+    viewCount: state.multiview.count,
+    cutoutSplats: Math.max(1, state.splat.count),
+    selectionSplats: state.selection.size,
+  });
+  if (memoryPlan.status === 'rejected') {
+    exposeConfirmedScanFailure(
+      active,
+      revision,
+      'Object scan exceeds the memory budget',
+      memoryPlan.reason,
+    );
+    return;
+  }
+  width = memoryPlan.width;
+  height = memoryPlan.height;
+  let syntheticViews = generateSyntheticOrbitViews({
     analysis,
     camera: scanSourceCamera,
-    count: state.multiview.count,
+    count: memoryPlan.viewCount,
     width,
     height,
   });
-    const synthetic = syntheticViewSet(syntheticViews, analysis);
+  let synthetic = syntheticViewSet(syntheticViews, analysis);
+  const denseMemoryPlan = planScanMemory({
+    width,
+    height,
+    viewCount: memoryPlan.viewCount,
+    trackingViewCount: synthetic.trackingViews.length,
+    cutoutSplats: memoryPlan.cutoutSplats,
+    selectionSplats: state.selection.size,
+  });
+  if (denseMemoryPlan.status === 'rejected') {
+    exposeConfirmedScanFailure(
+      active,
+      revision,
+      'Object scan exceeds the memory budget',
+      denseMemoryPlan.reason,
+    );
+    return;
+  }
+  const regenerateViews = denseMemoryPlan.width !== width
+    || denseMemoryPlan.height !== height
+    || denseMemoryPlan.viewCount !== memoryPlan.viewCount;
+  memoryPlan = denseMemoryPlan;
+  width = memoryPlan.width;
+  height = memoryPlan.height;
+  if (regenerateViews) {
+    syntheticViews = generateSyntheticOrbitViews({
+      analysis,
+      camera: scanSourceCamera,
+      count: memoryPlan.viewCount,
+      width,
+      height,
+    });
+    synthetic = syntheticViewSet(syntheticViews, analysis);
+  }
+  let projectionIndices;
+  try {
+    projectionIndices = await collectRefinementProjectionIndices(analysis, {
+      maxSplats: memoryPlan.cutoutSplats,
+      canceled: () => (
+        state.active !== active
+        || currentVisibleObjectRevision(active)?.key !== revision.key
+      ),
+    });
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      exposeConfirmedScanFailure(
+        active,
+        revision,
+        'Object changed during scan preparation',
+        'Confirm the current object again before scanning all sides.',
+      );
+      return;
+    }
+    if (error instanceof RangeError) {
+      exposeConfirmedScanFailure(
+        active,
+        revision,
+        'Object scan preparation is too large',
+        error.message,
+      );
+      return;
+    }
+    throw error;
+  }
+  const memoryLedger = new ScanMemoryLedger(memoryPlan.limits.peakBytes);
+  const fixedMemoryBytes = memoryPlan.reservation.peakBytes
+    - memoryPlan.reservation.breakdown.stagedFrames;
+  const fixedMemoryReservation = memoryLedger.tryReserve(
+    'scan fixed allocations and selection copies',
+    fixedMemoryBytes,
+  );
+  if (!fixedMemoryReservation.ok) {
+    exposeConfirmedScanFailure(
+      active,
+      revision,
+      'Object scan exceeds the memory budget',
+      'The fixed scan allocations exceed the enforced runtime budget.',
+    );
+    return;
+  }
     const views = synthetic.views;
-    const projectionIndices = collectRefinementProjectionIndices(analysis);
     const session = {
     id: performance.now(),
     views,
     trackingViews: synthetic.trackingViews ?? views,
     viewSet: synthetic,
+      // This captures only changes that invalidate the confirmed starting
+      // object. `state.selection` is intentionally omitted: accepted
+      // multiview evidence expands it while this scan is still authoritative.
+      scanSeed: Object.freeze({
+        active,
+        frame: active.frame,
+        frozenFrame: state.frozen?.frame ?? null,
+        requestToken: active.requestToken,
+        mask: active.currentMask,
+        maskW: active.maskW,
+        maskH: active.maskH,
+        maskRevision: active.maskRevision,
+        selectionRevision: active.selectionRevision,
+        viewRevision,
+        sceneRevision: sceneContentRevision,
+      }),
       analysis,
       projectionIndices,
       projectionIndexSpace: null,
       projectionCache: null,
       trackingCutout: null,
       captureResources: null,
+      memoryLedger,
+      fixedMemoryReservation: fixedMemoryReservation.token,
+      frameReservations: new Map(),
     index: 0,
     evidence: null,
     baseSelection: new Set(state.selection),
@@ -6494,6 +6676,7 @@ async function startMultiviewRefinement() {
         frames: [],
         startedAt: performance.now(),
         stageFramesMs: 0,
+        memoryPlan,
       },
     };
     session.diagnostics.sessionId = session.id;
@@ -6556,6 +6739,7 @@ async function startMultiviewRefinement() {
       session.projectionIndices,
       {
         priority: session.baseSelection,
+        maxSplats: memoryPlan.cutoutSplats,
         onProgress: (progress) => {
           updateWorkDetail(
             'multiview',
@@ -6576,9 +6760,16 @@ async function startMultiviewRefinement() {
     // projecting candidates that were not rendered produces false masks and
     // wastes memory.
     session.projectionIndices = cutout.indices;
-    session.projectionIndexSpace = createProjectionIndexSpace(
+    session.projectionIndexSpace = await createProjectionIndexSpaceAsync(
       state.splat.count,
       session.projectionIndices,
+      (progress) => {
+        updateWorkDetail(
+          'multiview',
+          `Preparing the compact object index · ${Math.round(progress * 100)}%`,
+        );
+      },
+      () => session.canceled || !scanSeedIsCurrent(session),
     );
     session.evidence = createViewEvidence(
       state.splat.count,
@@ -6593,11 +6784,18 @@ async function startMultiviewRefinement() {
       projectionBytes: cutout.count * 4 * 4,
       evidenceBytes: cutout.count * 20,
       estimatedCutoutBytes: cutout.count * 44,
+      plannedPeakBytes: memoryPlan.reservation.peakBytes,
+      peakLimitBytes: memoryPlan.limits.peakBytes,
       stagedBytes: 0,
       retainedFrameBytes: 0,
     };
   } catch (error) {
-    if (error.name === 'AbortError' || session.canceled) return;
+    if (error.name === 'AbortError' || session.canceled) {
+      if (state.multiview.session === session) {
+        finishMultiviewSession(session, 'All-sides scan stopped during preparation');
+      }
+      return;
+    }
     console.warn('[tracking] compact cutout failed', error);
     session.diagnostics.captureSource = 'cutout-failed';
     session.diagnostics.cutoutError = error.message;
@@ -6614,88 +6812,612 @@ async function startMultiviewRefinement() {
     );
     return;
   }
-  let branchFrames;
+  session.revisionKey = revision.key;
+  session.activeSelection = active;
+  session.captureWidth = width;
+  session.captureHeight = height;
+  session.branchFrames = new Map();
+  session.coordinatorStarted = true;
+  if (active.promoteWhenScanStarts) {
+    active.promoteWhenScanStarts = false;
+    setWorkspace('object');
+    ui.objectPreviewHud.dataset.promoting = 'true';
+    setTimeout(() => {
+      delete ui.objectPreviewHud.dataset.promoting;
+    }, 820);
+  }
   try {
-    branchFrames = await stageTemporalTrackingFrames(session);
+    const result = await scanCoordinator.start({
+      views: session.views,
+      renderViews: session.trackingViews,
+      seed: {
+        revisionKey: revision.key,
+        mask: active.currentMask,
+        maskW: active.maskW,
+        maskH: active.maskH,
+        width,
+        height,
+      },
+      isCurrent: () => coordinatedScanIsCurrent(session),
+    }, {
+      reason: 'visible-object-confirmed',
+    });
+    if (state.multiview.session !== session) return;
+    if (result.status === 'completed') {
+      finishMultiviewSession(session, 'All-sides scan complete');
+    } else {
+      finishMultiviewSession(session, 'All-sides scan stopped');
+      if (result.reason === 'stale-revision') {
+        exposeConfirmedScanFailure(
+          active,
+          revision,
+          'Object changed during scan',
+          'The Selection frame, mask, or Gaussian selection changed. Confirm the current object again.',
+        );
+      }
+    }
   } catch (error) {
-    if (error.name === 'AbortError' || session.canceled) return;
+    if (state.multiview.session !== session) return;
     const latestCapture = session.diagnostics.blackCaptures.at(-1) ?? null;
     session.diagnostics.stageError = {
-      source: 'stageTemporalTrackingFrames',
+      source: 'ScanCoordinator',
       name: error?.name ?? 'Error',
       message: error?.message ?? String(error),
       capture: latestCapture,
     };
-    console.error('[tracking] synthetic orbit preparation failed', {
+    console.error('[tracking] coordinated all-sides scan failed', {
       ...session.diagnostics.stageError,
       error,
     });
-    finishMultiviewSession(
-      session,
-      `Tracked orbit failed · ${session.diagnostics.stageError.name}: `
-        + session.diagnostics.stageError.message,
-    );
+    finishMultiviewSession(session, 'All-sides scan failed');
     exposeConfirmedScanFailure(
       active,
       revision,
-      'View rendering failed',
+      'All-sides scan failed',
       session.diagnostics.stageError.message,
     );
-    return;
   }
-  const seedMask = state.active?.currentMask;
-  const trackingSeed = prepareTrackingSeed(
-    seedMask,
-    state.active?.maskW,
-    state.active?.maskH,
-    width,
-    height,
-  );
-  if (branchFrames?.size) {
-    ui.multiviewStatus.textContent = 'Starting object tracking across the prepared angles…';
+}
+
+function coordinatedScanIsCurrent(session) {
+  if (state.multiview.session !== session || session.canceled) return false;
+  return scanSeedIsCurrent(session);
+}
+
+function scanSeedIsCurrent(session) {
+  const seed = session?.scanSeed;
+  const active = session?.activeSelection;
+  if (!seed || !active || state.active !== active || seed.active !== active) return false;
+  if (active.frame !== seed.frame || state.frozen?.frame !== seed.frozenFrame) return false;
+  if (active.requestToken !== seed.requestToken
+    || active.currentMask !== seed.mask
+    || active.maskW !== seed.maskW
+    || active.maskH !== seed.maskH
+    || active.maskRevision !== seed.maskRevision
+    || active.selectionRevision !== seed.selectionRevision
+    || viewRevision !== seed.viewRevision
+    || sceneContentRevision !== seed.sceneRevision) {
+    return false;
+  }
+  // The fixed Selection frame, not the growing fused selection, is the
+  // contract for every scan result. Matrix parity also catches damping or
+  // automatic camera moves that a revision counter can miss.
+  return currentSelectionFrameParity(active).ok;
+}
+
+function handleScanCoordinatorEvent(event) {
+  const session = state.multiview.session;
+  if (!session?.coordinatorStarted) return;
+  if (event.runId && session.coordinatorRunId == null) {
+    session.coordinatorRunId = event.runId;
+  }
+  if (event.runId !== session.coordinatorRunId) return;
+  if (event.type === 'progress') {
+    const labels = {
+      rendering: 'Rendering',
+      tracking: 'Tracking',
+      'adding-to-3d': 'Adding to 3D',
+    };
+    const label = labels[event.phase];
+    if (!label) return;
+    ui.multiviewStatus.textContent =
+      `${label} ${event.completed} / ${event.total}`;
     setWork({
       key: `multiview-${session.id}`,
       state: 'busy',
-      title: 'Starting object tracking',
-      detail: 'The complete angle sequence is ready. Initializing its shared object memory.',
-      steps: ['prepare angles', 'follow object', 'map to 3D', 'review', 'combine'],
-      active: 1,
+      title: `${label} ${event.completed} / ${event.total}`,
+      detail: event.phase === 'rendering'
+        ? 'Building the ordered offscreen image sequence without moving the live Scene.'
+        : event.phase === 'tracking'
+          ? 'SAM 3.1 is following the confirmed object through the prepared sequence.'
+          : 'Accepted evidence is being added to the current 3D object.',
+      steps: ['render views', 'track object', 'add to 3D'],
+      active: event.phase === 'rendering' ? 0 : event.phase === 'tracking' ? 1 : 2,
     });
-  }
-  const temporalTracking = await propagationProvider.begin({
-    seedCanvas: trackingSeed.canvas,
-    seedMask: trackingSeed.mask,
-    maskW: width,
-    maskH: height,
-    branchFrames,
-    branches: [...new Set(
-      views.map((view) => view.trackBranch ?? 'orbit'),
-    )],
-    objectId: `selection-${Math.round(session.id)}`,
-  });
-  if (!temporalTracking) {
-    finishMultiviewSession(session, 'Could not start SAM 3.1 temporal tracking');
-    refreshTrackerCapability();
-    exposeConfirmedScanFailure(
-      active,
-      revision,
-      'Tracking start failed',
-      'SAM 3.1 could not start the confirmed revision.',
-    );
+    if (event.phase === 'rendering') {
+      ui.multiviewProgress.style.width =
+        `${event.completed / Math.max(1, event.total) * 35}%`;
+    } else if (event.phase === 'tracking') {
+      ui.multiviewProgress.style.width =
+        `${35 + event.completed / Math.max(1, event.total) * 35}%`;
+    } else {
+      ui.multiviewProgress.style.width =
+        `${70 + event.completed / Math.max(1, event.total) * 30}%`;
+    }
     return;
   }
-  // The backend now owns the complete ordered sequence. Keep only the key
-  // frames used by the review UI; bridge frames must not remain resident for
-  // the rest of the scan.
-  session.trackingStaged = Boolean(branchFrames?.size);
+  if (event.type === 'scan-failed') {
+    ui.multiviewStatus.textContent =
+      `All-sides scan failed · ${event.error?.message ?? 'unknown error'}`;
+  } else if (event.type === 'scan-cancelled') {
+    ui.multiviewStatus.textContent =
+      event.reason === 'stale-revision'
+        ? 'Object changed · scan stopped before stale evidence was applied'
+        : 'All-sides scan stopped';
+  }
+}
+
+async function renderCoordinatedScanView(view, { index, signal, runId, total }) {
+  const session = state.multiview.session;
+  if (!session || !coordinatedScanIsCurrent(session)) {
+    throw new DOMException('Scan revision is stale', 'AbortError');
+  }
+  session.coordinatorRunId ??= runId;
+  if (signal.aborted) throw new DOMException('Scan cancelled', 'AbortError');
+  const poseKey = view.transform
+    .map((value) => Number(value).toFixed(5))
+    .join(',');
+  let blob = session.stagedPoseFrames.get(poseKey);
+  let captureResult = null;
+  let encodeMs = 0;
+  const reused = Boolean(blob);
+  if (!blob) {
+    applyViewToCamera(view, refinementCamera);
+    captureResult = await captureCheckedRefinementView(session, view, refinementCamera);
+    if (signal.aborted || !coordinatedScanIsCurrent(session)) {
+      throw new DOMException('Scan revision is stale', 'AbortError');
+    }
+    const encodeStartedAt = performance.now();
+    blob = await canvasToBlob(multiviewCapture, 'image/jpeg', 0.86);
+    encodeMs = performance.now() - encodeStartedAt;
+    reserveScanFrameBlob(session, blob, view.id);
+    session.stagedPoseFrames.set(poseKey, blob);
+    const stagedBytes = uniqueBlobBytes(session.stagedPoseFrames.values());
+    session.diagnostics.memory.stagedBytes = stagedBytes;
+    if (stagedBytes > MAX_STAGED_TRACKING_BYTES) {
+      throw new RangeError(
+        `The prepared view sequence exceeded the ${Math.round(
+          MAX_STAGED_TRACKING_BYTES / 1_048_576,
+        )} MB safety budget.`,
+      );
+    }
+  }
+  if (session.keyViewIds.has(view.id)) {
+    if (captureResult) {
+      scanTray.rendered({ id: view.id, label: view.label, canvas: multiviewCapture });
+    } else {
+      const bitmap = await createImageBitmap(blob);
+      try {
+        scanTray.rendered({ id: view.id, label: view.label, canvas: bitmap });
+      } finally {
+        bitmap.close();
+      }
+    }
+    session.stagedFrames.set(view.id, blob);
+  }
+  if (!session.branchFrames.has(view.trackBranch)) {
+    session.branchFrames.set(view.trackBranch, []);
+  }
+  session.branchFrames.get(view.trackBranch).push({ view, blob });
+  session.diagnostics.frames.push({
+    id: view.id,
+    label: view.label,
+    reused,
+    sortMs: captureResult?.timings.sortMs ?? 0,
+    renderMs: captureResult?.timings.renderMs ?? 0,
+    readbackMs: captureResult?.timings.readbackMs ?? 0,
+    imageCopyMs: captureResult?.timings.imageCopyMs ?? 0,
+    encodeMs,
+    totalMs: (captureResult?.timings.totalMs ?? 0) + encodeMs,
+    content: captureResult?.content ?? null,
+  });
+  if (reused) session.diagnostics.reusedFrames++;
+  else session.diagnostics.renderedFrames++;
+  await yieldInteractiveFrame(session);
+  let retainedBlob = blob;
+  return {
+    viewId: view.id,
+    get blob() {
+      return retainedBlob;
+    },
+    bytes: blob.size ?? 0,
+    release() {
+      retainedBlob = null;
+    },
+  };
+}
+
+async function beginCoordinatedTracking({
+  views,
+  renderViews,
+  frames,
+  seed,
+  signal,
+  runId,
+  registerPendingCancel,
+}) {
+  const session = state.multiview.session;
+  if (!session || !coordinatedScanIsCurrent(session)
+    || seed.revisionKey !== session.revisionKey) {
+    throw new DOMException('Scan revision is stale', 'AbortError');
+  }
+  session.coordinatorRunId ??= runId;
+  const trackingSeed = prepareTrackingSeed(
+    seed.mask,
+    seed.maskW,
+    seed.maskH,
+    seed.width,
+    seed.height,
+  );
+  let beginSettled = false;
+  const unregisterPendingCancel = registerPendingCancel(async () => {
+    // Router.begin performs a capability check before it creates the temporal
+    // lifecycle controller. Keep closing until that pending begin settles so
+    // cancellation also catches the narrow probe-to-upload transition.
+    do {
+      await propagationProvider.close();
+      if (!beginSettled) await new Promise((resolve) => setTimeout(resolve, 0));
+    } while (!beginSettled);
+  });
+  let temporalTracking;
+  try {
+    temporalTracking = await propagationProvider.begin({
+      seedCanvas: trackingSeed.canvas,
+      seedMask: trackingSeed.mask,
+      maskW: seed.width,
+      maskH: seed.height,
+      branchFrames: session.branchFrames,
+      branches: [...new Set(views.map((view) => view.trackBranch ?? 'orbit'))],
+      objectId: `selection-${Math.round(session.id)}`,
+    });
+  } finally {
+    beginSettled = true;
+    unregisterPendingCancel();
+  }
+  if (!temporalTracking || signal.aborted || !coordinatedScanIsCurrent(session)) {
+    if (temporalTracking) await propagationProvider.close();
+    if (signal.aborted || !coordinatedScanIsCurrent(session)) {
+      throw new DOMException('Scan revision is stale', 'AbortError');
+    }
+    throw new Error('SAM 3.1 did not accept the confirmed scan session.');
+  }
+  session.trackingStaged = Boolean(session.branchFrames.size);
   session.stagedPoseFrames.clear();
-  branchFrames.clear();
+  session.branchFrames.clear();
+  for (const frame of frames) frame.release?.();
+  releaseUnretainedScanFrameReservations(session);
   session.diagnostics.memory.retainedFrameBytes = uniqueBlobBytes(
     session.stagedFrames.values(),
   );
   session.providerMode = 'temporal-tracker';
   session.providerLabel = 'SAM 3.1 temporal tracking';
-  await processNextMultiviewView(session);
+  let closed = false;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    await propagationProvider.close();
+    for (const frame of frames) frame.release?.();
+    session.stagedFrames.clear();
+    session.stagedPoseFrames.clear();
+  };
+  return {
+    results: (async function* coordinatedTrackingResults() {
+      for (let index = 0; index < views.length; index++) {
+        await waitForCoordinatedScanResume(session, signal);
+        yield await trackCoordinatedKeyView(session, views[index], index, signal);
+      }
+    })(),
+    async cancel() {
+      await close();
+    },
+    close,
+  };
+}
+
+async function waitForCoordinatedScanResume(session, signal) {
+  while (session.paused) {
+    await new Promise((resolve, reject) => {
+      session.resumeCoordinator = resolve;
+      signal.addEventListener('abort', () => {
+        session.resumeCoordinator = null;
+        reject(new DOMException('Scan cancelled', 'AbortError'));
+      }, { once: true });
+    });
+  }
+  if (signal.aborted) throw new DOMException('Scan cancelled', 'AbortError');
+}
+
+async function trackCoordinatedKeyView(session, view, index, signal) {
+  session.index = index;
+  const startedAt = performance.now();
+  let rendered;
+  const stagedFrame = session.stagedFrames.get(view.id);
+  if (!stagedFrame) throw new Error(`Prepared RGB is missing for ${view.label}`);
+  rendered = await drawStagedTrackingFrame(stagedFrame, view);
+  session.stagedFrames.delete(view.id);
+  if (![...session.stagedFrames.values()].includes(stagedFrame)) {
+    releaseScanFrameBlob(session, stagedFrame);
+  }
+  session.diagnostics.memory.retainedFrameBytes = uniqueBlobBytes(
+    session.stagedFrames.values(),
+  );
+  applyViewToCamera(view, refinementCamera);
+  refinementCamera.updateMatrixWorld(true);
+  const viewProj = new THREE.Matrix4().multiplyMatrices(
+    refinementCamera.projectionMatrix,
+    refinementCamera.matrixWorldInverse,
+  );
+  const projection = await projectSplatsAsync({
+    centers: state.splat.centers,
+    count: state.splat.count,
+    viewProj: viewProj.elements,
+    viewW: rendered.width,
+    viewH: rendered.height,
+    hidden: state.splat.getHiddenSplatsData(),
+    radii: state.splat.radii,
+    opacity: state.splat.opacity,
+    indices: session.projectionIndices,
+    indexSpace: session.projectionIndexSpace,
+    reuse: session.projectionCache,
+  }, (progress) => {
+    updateWorkDetail('multiview', `Locating the object · ${Math.round(progress * 100)}%`);
+  }, () => signal.aborted || !coordinatedScanIsCurrent(session));
+  session.projectionCache = projection;
+  const guidance = buildProjectedSelectionGuidance({
+    projection,
+    selection: session.baseSelection,
+    projectionW: rendered.width,
+    projectionH: rendered.height,
+    targetW: multiviewCapture.width,
+    targetH: multiviewCapture.height,
+    depthSlack: state.slack * state.splat.scale,
+  });
+  const branch = view.trackBranch ?? view.source ?? 'captured';
+  let propagated;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      propagated = await propagationProvider.propagate({
+        canvas: multiviewCapture,
+        guidance,
+        previousAreaRatio: session.previousAreaByBranch.get(branch) ?? null,
+        branch,
+        view,
+        onProgress: (progress) => {
+          if (signal.aborted || !coordinatedScanIsCurrent(session)) return;
+          scanTray.trackingProgress({
+            processed: progress.processedFrame ?? 0,
+            target: progress.targetFrame ?? 0,
+            total: progress.totalFrames ?? progress.targetFrame ?? 0,
+          });
+        },
+      });
+      break;
+    } catch (error) {
+      if (signal.aborted || error?.name === 'AbortError') throw error;
+      if (attempt) throw error;
+    }
+  }
+  if (signal.aborted || !coordinatedScanIsCurrent(session)) {
+    throw new DOMException('Scan revision is stale', 'AbortError');
+  }
+  const {
+    mask,
+    maskW,
+    maskH,
+    score,
+    validation,
+    provider,
+  } = propagated;
+  const accepted = Boolean(propagated.accepted && !validation?.needsReview);
+  scanTray.tracked({
+    id: view.id,
+    label: view.label,
+    mask,
+    maskW,
+    maskH,
+    accepted,
+  });
+  if (validation?.areaRatio > 0 && propagated.accepted) {
+    session.previousAreaByBranch.set(branch, validation.areaRatio);
+  }
+  return {
+    viewId: view.id,
+    mask,
+    maskW,
+    maskH,
+    score,
+    validation,
+    provider,
+    accepted: Boolean(propagated.accepted),
+    reasons: propagated.reasons ?? [],
+    projection,
+    guidance,
+    rendered,
+    trackedMs: performance.now() - startedAt,
+  };
+}
+
+async function liftCoordinatedTrackedMask({
+  tracked,
+  view,
+  index,
+  signal,
+}) {
+  const session = state.multiview.session;
+  if (!session || signal.aborted || !coordinatedScanIsCurrent(session)) {
+    throw new DOMException('Scan revision is stale', 'AbortError');
+  }
+  const fatal = tracked.validation?.fatalReasons?.length > 0 || !tracked.mask;
+  if (!tracked.accepted || !tracked.mask) {
+    return {
+      skipped: fatal,
+      needsReview: !fatal,
+      proposal: {
+        view,
+        selected: new Set(),
+        visible: tracked.guidance.visibleSelection,
+        score: tracked.score,
+        mask: tracked.mask,
+        maskW: tracked.maskW,
+        maskH: tracked.maskH,
+        guidance: tracked.guidance,
+        provider: tracked.provider,
+        validation: tracked.validation,
+        alteredVisibility: false,
+        reason: tracked.reasons[0] || 'object not found',
+      },
+    };
+  }
+  const lifted = await liftProjectedMaskAsync({
+    projection: tracked.projection,
+    mask: tracked.mask,
+    maskW: tracked.maskW,
+    maskH: tracked.maskH,
+    absSlack: state.slack * state.splat.scale,
+    relSlack: 0.01,
+  }, (progress, seedCount) => {
+    updateWorkDetail(
+      'multiview',
+      `Adding to 3D ${index + 1} / ${session.views.length} · `
+        + `${seedCount.toLocaleString()} splats · ${Math.round(progress * 100)}%`,
+    );
+  }, () => signal.aborted || !coordinatedScanIsCurrent(session));
+  const selected = await growAsync({
+    grid: state.grid,
+    centers: state.splat.centers,
+    colors: state.splat.colors,
+    seeds: lifted.seeds,
+    proj: lifted.proj,
+    mask: tracked.mask,
+    maskW: tracked.maskW,
+    maskH: tracked.maskH,
+    viewW: tracked.rendered.width,
+    viewH: tracked.rendered.height,
+    radius: Math.min(state.radius, 0.004) * state.splat.scale,
+    steps: lifted.seeds.length >= 8_000
+      ? 0
+      : lifted.seeds.length >= 2_000
+        ? Math.min(1, state.steps)
+        : Math.min(2, state.steps),
+    depthBand: state.slack * state.splat.scale * 3,
+  }, () => {}, () => signal.aborted || !coordinatedScanIsCurrent(session));
+  const visible = await collectVisibleObjectGaussians(
+    tracked.projection,
+    session.baseSelection,
+    session,
+  );
+  return {
+    proposal: {
+      view,
+      selected,
+      visible,
+      membershipWeights: lifted.seedWeights,
+      score: tracked.score,
+      mask: tracked.mask,
+      maskW: tracked.maskW,
+      maskH: tracked.maskH,
+      guidance: tracked.guidance,
+      provider: tracked.provider,
+      validation: tracked.validation,
+      alteredVisibility: false,
+    },
+  };
+}
+
+async function fuseCoordinatedEvidence({ lifted, index, signal }) {
+  const session = state.multiview.session;
+  if (!session || signal.aborted || !coordinatedScanIsCurrent(session)) {
+    throw new DOMException('Scan revision is stale', 'AbortError');
+  }
+  const proposal = lifted.proposal;
+  session.index = index;
+  if (lifted.skipped) {
+    recordMultiviewSkip(session, proposal.reason);
+    scanTray.skipped({ id: proposal.view.id, reason: 'object not found' });
+    addViewEvidence(session.evidence, {
+      selected: proposal.selected,
+      visible: proposal.visible,
+      score: 0,
+      accepted: false,
+      failed: true,
+    });
+    return { accepted: false, skipped: true, added: 0 };
+  }
+  let accepted = true;
+  if (lifted.needsReview || proposal.validation?.needsReview) {
+    accepted = await requestCoordinatedEvidenceDecision(session, proposal, signal);
+  }
+  if (!accepted) {
+    addViewEvidence(session.evidence, {
+      selected: proposal.selected,
+      visible: proposal.visible,
+      score: proposal.score,
+      accepted: false,
+    });
+    scanTray.skipped({ id: proposal.view.id, reason: 'not used' });
+    return { accepted: false, skipped: false, added: 0 };
+  }
+  addViewEvidence(session.evidence, {
+    selected: proposal.selected,
+    visible: proposal.visible,
+    score: proposal.score,
+    membershipWeights: proposal.membershipWeights,
+    viewGroup: proposal.view?.evidenceGroup ?? index,
+    accepted: true,
+    alteredVisibility: proposal.alteredVisibility,
+  });
+  const fused = fuseViewEvidence(session.evidence, {
+    baseSelection: session.baseSelection,
+    baseConfidence: session.baseConfidence,
+    confidenceBuffer: session.fusedConfidence,
+    locked: state.locked,
+    minimumViews: state.multiview.minimumViews,
+    confidenceThreshold: state.multiview.confidence,
+    provisionalThreshold: state.minimumConfidence,
+  });
+  for (const excluded of state.manualExcluded) {
+    fused.selection.delete(excluded);
+    fused.newlyAdded.delete(excluded);
+    fused.provisional.delete(excluded);
+    fused.confidence[excluded] = 0;
+  }
+  const added = await materializeFusedSelection(session, fused, index + 1);
+  scanTray.fuse({ id: proposal.view.id, added });
+  return { accepted: true, added };
+}
+
+function requestCoordinatedEvidenceDecision(session, proposal, signal) {
+  session.currentProposal = proposal;
+  showMultiviewReview(
+    session,
+    proposal.reason
+      || `${proposal.selected.size.toLocaleString()} possible object points`,
+  );
+  return new Promise((resolve, reject) => {
+    const abort = () => {
+      session.decisionResolve = null;
+      reject(new DOMException('Scan cancelled', 'AbortError'));
+    };
+    session.decisionResolve = (accepted) => {
+      signal.removeEventListener('abort', abort);
+      session.decisionResolve = null;
+      session.waitingReview = false;
+      session.currentProposal = null;
+      ui.multiviewReview.hidden = true;
+      resolve(Boolean(accepted));
+    };
+    signal.addEventListener('abort', abort, { once: true });
+  });
 }
 
 async function processNextMultiviewView(session) {
@@ -7092,6 +7814,10 @@ function editMultiviewStartingMask() {
 
 async function resolveMultiviewProposal(accepted) {
   const session = state.multiview.session;
+  if (session?.coordinatorStarted && session.decisionResolve) {
+    session.decisionResolve(accepted);
+    return;
+  }
   const proposal = session?.currentProposal;
   if (!session?.waitingReview || !proposal || session.materializing) return;
   session.waitingReview = false;
@@ -7196,8 +7922,10 @@ function finishMultiviewSession(session, title) {
   if (session.trackingCutout) {
     refinementScene.remove(session.trackingCutout.object3D);
   }
+  releaseAllScanMemoryReservations(session);
   session.stagedFrames.clear();
   session.stagedPoseFrames.clear();
+  session.branchFrames?.clear?.();
   // A cancel can arrive while WebGL is waiting on an asynchronous pixel-pack
   // fence. Dispose as soon as that bounded transfer returns, never while the
   // GPU still owns the target.
@@ -7289,7 +8017,11 @@ function stopMultiviewForSeedEdit(
   const session = state.multiview.session;
   if (!session) return;
   session.canceled = true;
-  finishMultiviewSession(session, title);
+  if (session.coordinatorStarted) {
+    void scanCoordinator.cancel('mask-edit');
+  } else {
+    finishMultiviewSession(session, title);
+  }
 }
 
 function scheduleAutomaticMultiview(reason = 'selection ready', delay = 650) {
@@ -7610,6 +8342,46 @@ function uniqueBlobBytes(blobs) {
     bytes += blob.size ?? 0;
   }
   return bytes;
+}
+
+function reserveScanFrameBlob(session, blob, label) {
+  if (!blob || session.frameReservations.has(blob)) return;
+  const reservation = session.memoryLedger.tryReserve(
+    `tracking frame ${label}`,
+    blob.size ?? 0,
+  );
+  if (!reservation.ok) {
+    throw new RangeError(
+      'The prepared tracking frames exceeded the enforced peak memory budget.',
+    );
+  }
+  session.frameReservations.set(blob, reservation.token);
+  session.diagnostics.memory.runtimePeakBytes =
+    session.memoryLedger.snapshot().peakBytes;
+}
+
+function releaseScanFrameBlob(session, blob) {
+  const token = session.frameReservations.get(blob);
+  if (token == null) return false;
+  session.frameReservations.delete(blob);
+  return session.memoryLedger.release(token);
+}
+
+function releaseUnretainedScanFrameReservations(session) {
+  const retained = new Set(session.stagedFrames.values());
+  for (const blob of session.frameReservations.keys()) {
+    if (!retained.has(blob)) releaseScanFrameBlob(session, blob);
+  }
+}
+
+function releaseAllScanMemoryReservations(session) {
+  for (const blob of [...session.frameReservations.keys()]) {
+    releaseScanFrameBlob(session, blob);
+  }
+  if (session.fixedMemoryReservation != null) {
+    session.memoryLedger.release(session.fixedMemoryReservation);
+    session.fixedMemoryReservation = null;
+  }
 }
 
 function summarizeCaptureTimings(frames) {
@@ -8367,14 +9139,10 @@ function acceptVisibleObjectConfirmation() {
   active.confirmedSelectionIds = Int32Array.from(state.selection);
   active.confirmedScanRevisionKey = revision.key;
   active.confirmedScanPending = true;
+  active.promoteWhenScanStarts = true;
   active.scanRetry = null;
   ui.confirmVisibleObject.disabled = true;
   ui.visibleObjectGate.hidden = true;
-  setWorkspace('object');
-  ui.objectPreviewHud.dataset.promoting = 'true';
-  setTimeout(() => {
-    delete ui.objectPreviewHud.dataset.promoting;
-  }, 820);
   ui.multiviewStatus.textContent =
     `Rendering 1 / ${state.multiview.count} · queued from the confirmed Selection frame`;
   scanTray.begin({
@@ -8391,7 +9159,7 @@ function acceptVisibleObjectConfirmation() {
     active: 1,
   });
   refreshMultiviewCapability();
-  scheduleAutomaticMultiview('Visible object confirmed', 0);
+  void startMultiviewRefinement();
 }
 
 function selectionMatchesConfirmedSnapshot(active) {

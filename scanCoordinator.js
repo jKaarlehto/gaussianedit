@@ -57,32 +57,47 @@ export class ScanCoordinator {
    * Start a scan. A currently active run is superseded and fully cleaned
    * before the replacement invokes any provider.
    */
-  start({ views, seed = null, signal: externalSignal = null } = {}, {
+  start({
+    views,
+    renderViews = views,
+    seed = null,
+    signal: externalSignal = null,
+    isCurrent = null,
+  } = {}, {
     reason = 'start',
   } = {}) {
     if (!Array.isArray(views) || views.length === 0) {
       throw new TypeError('ScanCoordinator.start requires a non-empty views array');
     }
+    if (!Array.isArray(renderViews) || renderViews.length === 0) {
+      throw new TypeError('ScanCoordinator renderViews must be a non-empty array');
+    }
     if (externalSignal != null && !isAbortSignal(externalSignal)) {
       throw new TypeError('ScanCoordinator signal must be an AbortSignal');
+    }
+    if (isCurrent != null && typeof isCurrent !== 'function') {
+      throw new TypeError('ScanCoordinator isCurrent must be a function');
     }
 
     const previous = this.activeRun;
     if (previous && !previous.controller.signal.aborted) {
-      this._event(previous, 'cancel-requested', {
-        reason: 'superseded',
-      });
-      previous.controller.abort('superseded');
+      this._requestCancel(previous, 'superseded');
     }
 
     const run = {
       id: this.nextRunId++,
       reason,
       views: views.slice(),
+      renderViews: renderViews.slice(),
       seed,
+      isCurrent,
       controller: new AbortController(),
       externalSignal,
       removeExternalAbort: null,
+      pendingCancel: null,
+      pendingCancelPromise: null,
+      tracker: null,
+      trackerCancelPromise: null,
       done: null,
     };
     this.activeRun = run;
@@ -90,10 +105,7 @@ export class ScanCoordinator {
     if (externalSignal) {
       const abortFromOutside = () => {
         if (run.controller.signal.aborted) return;
-        this._event(run, 'cancel-requested', {
-          reason: externalSignal.reason ?? 'external',
-        });
-        run.controller.abort(externalSignal.reason);
+        this._requestCancel(run, externalSignal.reason ?? 'external');
       };
       if (externalSignal.aborted) abortFromOutside();
       else {
@@ -138,8 +150,7 @@ export class ScanCoordinator {
     const run = this.activeRun;
     if (!run) return Promise.resolve(null);
     if (!run.controller.signal.aborted) {
-      this._event(run, 'cancel-requested', { reason });
-      run.controller.abort(reason);
+      this._requestCancel(run, reason);
     }
     return run.done;
   }
@@ -147,7 +158,9 @@ export class ScanCoordinator {
   async _run(run) {
     const { signal } = run.controller;
     const total = run.views.length;
+    const renderTotal = run.renderViews.length;
     const frames = [];
+    let keyFrames = null;
     const fused = [];
     const cleanup = [];
     let terminalError = null;
@@ -161,33 +174,52 @@ export class ScanCoordinator {
 
     this._event(run, 'scan-started', { total, reason: run.reason });
     try {
-      throwIfAborted(signal);
+      this._guard(run);
 
-      for (let index = 0; index < total; index++) {
-        const view = run.views[index];
+      for (let index = 0; index < renderTotal; index++) {
+        const view = run.renderViews[index];
         const frame = await this.renderView(view, this._context(run, index));
         if (frame == null) {
           throw new Error(`renderView returned no frame for view ${viewLabel(view, index)}`);
         }
         frames.push(frame);
         cleanup.push(() => releaseTemporary(frame));
-        throwIfAborted(signal);
+        this._guard(run);
         counts.rendered++;
-        this._progress(run, 'rendering', counts.rendered, total, view, index);
+        this._progress(run, 'rendering', counts.rendered, renderTotal, view, index);
       }
-      this._event(run, 'rendering-complete', { total });
-      throwIfAborted(signal);
+      this._event(run, 'rendering-complete', { total: renderTotal });
+      this._guard(run);
+      keyFrames = mapFramesToKeyViews(run.views, run.renderViews, frames);
 
       const tracker = await this.trackMask({
         views: run.views.slice(),
+        renderViews: run.renderViews.slice(),
         frames: frames.slice(),
         seed: run.seed,
         signal,
         runId: run.id,
+        registerPendingCancel: (cancel) => {
+          if (typeof cancel !== 'function') {
+            throw new TypeError('Pending tracking cancel must be a function');
+          }
+          run.pendingCancel = cancel;
+          if (signal.aborted && !run.pendingCancelPromise) {
+            run.pendingCancelPromise = settleCancel(cancel, signal.reason);
+          }
+          return () => {
+            if (run.pendingCancel === cancel) run.pendingCancel = null;
+          };
+        },
       });
+      run.pendingCancel = null;
       if (tracker == null) throw new Error('trackMask returned no tracking results');
-      cleanup.push(() => releaseTracker(tracker, signal));
-      throwIfAborted(signal);
+      run.tracker = tracker;
+      cleanup.push(async () => {
+        await releaseTracker(tracker, signal, run.trackerCancelPromise);
+        if (run.tracker === tracker) run.tracker = null;
+      });
+      this._guard(run);
       this._event(run, 'tracking-started', { total });
 
       const results = trackingResults(tracker);
@@ -197,7 +229,7 @@ export class ScanCoordinator {
 
       for await (const tracked of results) {
         cleanup.push(() => releaseTemporary(tracked));
-        throwIfAborted(signal);
+        this._guard(run);
         const index = trackedResultIndex(tracked, run.views, emittedOrdinal);
         emittedOrdinal++;
         if (pending.has(index) || index < nextIndex) {
@@ -226,7 +258,7 @@ export class ScanCoordinator {
 
           const lifted = await this.liftMask({
             view: currentView,
-            frame: frames[currentIndex],
+            frame: keyFrames[currentIndex],
             tracked: currentTracked,
             index: currentIndex,
             signal,
@@ -238,7 +270,7 @@ export class ScanCoordinator {
             );
           }
           cleanup.push(() => releaseTemporary(lifted));
-          throwIfAborted(signal);
+          this._guard(run);
           counts.lifted++;
           this._event(run, 'view-lifted', {
             completed: counts.lifted,
@@ -249,14 +281,14 @@ export class ScanCoordinator {
 
           const fusedResult = await this.fuseEvidence({
             view: currentView,
-            frame: frames[currentIndex],
+            frame: keyFrames[currentIndex],
             tracked: currentTracked,
             lifted,
             index: currentIndex,
             signal,
             runId: run.id,
           });
-          throwIfAborted(signal);
+          this._guard(run);
           fused.push(fusedResult);
           counts.fused++;
           this._progress(
@@ -280,6 +312,9 @@ export class ScanCoordinator {
       counts = Object.freeze({ ...counts });
     } catch (error) {
       terminalError = error;
+      if (!signal.aborted && isAbortError(error)) {
+        this._requestCancel(run, abortReason(run, error));
+      }
       status = signal.aborted || isAbortError(error) ? 'cancelled' : 'failed';
     }
 
@@ -331,8 +366,35 @@ export class ScanCoordinator {
       index,
       runId: run.id,
       signal: run.controller.signal,
-      total: run.views.length,
+      total: run.renderViews.length,
     });
+  }
+
+  _guard(run) {
+    throwIfAborted(run.controller.signal);
+    if (!run.isCurrent || run.isCurrent()) return;
+    this._requestCancel(run, 'stale-revision');
+    throwIfAborted(run.controller.signal);
+  }
+
+  _requestCancel(run, reason) {
+    if (run.controller.signal.aborted) return;
+    this._event(run, 'cancel-requested', { reason });
+    if (typeof run.pendingCancel === 'function' && !run.pendingCancelPromise) {
+      run.pendingCancelPromise = settleCancel(run.pendingCancel, reason);
+    }
+    if (typeof run.tracker?.cancel === 'function' && !run.trackerCancelPromise) {
+      try {
+        run.trackerCancelPromise = Promise.resolve(run.tracker.cancel(reason))
+          .then(
+            () => null,
+            (error) => error,
+          );
+      } catch (error) {
+        run.trackerCancelPromise = Promise.resolve(error);
+      }
+    }
+    run.controller.abort(reason);
   }
 
   _progress(run, phase, completed, total, view, index) {
@@ -356,6 +418,17 @@ export class ScanCoordinator {
     } catch {
       // UI/event observers cannot corrupt the coordinator or leak resources.
     }
+  }
+}
+
+function settleCancel(cancel, reason) {
+  try {
+    return Promise.resolve(cancel(reason)).then(
+      () => null,
+      (error) => error,
+    );
+  } catch (error) {
+    return Promise.resolve(error);
   }
 }
 
@@ -404,6 +477,49 @@ function viewLabel(view, index) {
   return view?.label ?? viewId(view, index);
 }
 
+function mapFramesToKeyViews(views, renderViews, frames) {
+  const framesById = new Map();
+  for (let index = 0; index < renderViews.length; index++) {
+    const id = renderViews[index]?.id;
+    if (id == null) continue;
+    const stableId = String(id);
+    if (framesById.has(stableId)) {
+      throw new Error(`renderViews contains duplicate view id ${stableId}`);
+    }
+    framesById.set(stableId, frames[index]);
+  }
+  return views.map((view, index) => {
+    if (view?.id != null) {
+      const stableId = String(view.id);
+      if (!framesById.has(stableId)) {
+        throw new Error(`renderViews omitted key view ${stableId}`);
+      }
+      return framesById.get(stableId);
+    }
+    const renderIndex = renderViews.indexOf(view);
+    if (renderIndex >= 0) return frames[renderIndex];
+    if (views.length === renderViews.length) return frames[index];
+    throw new Error(
+      `dense renderViews requires a stable id for key view ${viewLabel(view, index)}`,
+    );
+  });
+}
+
+function abortReason(run, error) {
+  let current = true;
+  try {
+    current = !run.isCurrent || run.isCurrent();
+  } catch {
+    current = false;
+  }
+  if (!current
+    || error?.reason === 'stale-revision'
+    || /\bstale\b/i.test(error?.message ?? '')) {
+    return 'stale-revision';
+  }
+  return error?.reason ?? 'provider-abort';
+}
+
 function throwIfAborted(signal) {
   if (!signal.aborted) return;
   if (typeof signal.throwIfAborted === 'function') signal.throwIfAborted();
@@ -420,9 +536,12 @@ function isAbortSignal(signal) {
     && typeof signal.addEventListener === 'function';
 }
 
-async function releaseTracker(tracker, signal) {
+async function releaseTracker(tracker, signal, requestedCancel = null) {
   const errors = [];
-  if (signal.aborted && typeof tracker?.cancel === 'function') {
+  if (requestedCancel) {
+    const cancelError = await requestedCancel;
+    if (cancelError) errors.push(cancelError);
+  } else if (signal.aborted && typeof tracker?.cancel === 'function') {
     try {
       await tracker.cancel(signal.reason);
     } catch (error) {
