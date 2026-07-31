@@ -38,6 +38,10 @@ skill defines the root role.
   candidate banner. The board links product work to that banner; it does not
   duplicate product decision controls or ask the user to approve internal WIP.
   Board-site controls are only for board, connector, and framework work.
+- Board/connector/framework tasks default to agent verification. Require human
+  Acceptance only for a visual, interactive, or policy decision that cannot be
+  verified by tests, deployment state, protocol checks, or authenticated
+  probes; record that reason on the task.
 - Import `Looks good` and `Back to loop` decisions from the product banner.
   Route comments to the owning task; clear an active review item only after its
   durable import is acknowledged. Only explicit acceptance records

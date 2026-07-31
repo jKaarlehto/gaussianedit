@@ -410,6 +410,12 @@ they do not become interchangeable confidence numbers.
   controls or expose internal review/WIP jobs as user test items. The
   orchestration site's own Acceptance controls are reserved for board,
   connector, dispatcher, and framework work.
+- Board, connector, dispatcher, and framework work defaults to agent
+  verification. Passing focused tests, protocol/deployment checks, and
+  authenticated endpoint probes may close it without human action. Publish a
+  board-site Acceptance item only for a genuinely visual, interactive, or
+  policy decision that automation cannot verify, and record the reason human
+  verification is required.
 - The root orchestrator owns task partitioning, patch review, integration,
   commits, pushes, candidate publication, and feedback routing. Implementation
   agents do not merge, publish, or update release metadata unless assigned that

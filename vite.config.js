@@ -5,7 +5,10 @@ import { basename, join } from 'node:path';
 
 const trackerOrigin = process.env.GAUSSIANEDIT_TRACKER_ORIGIN?.trim();
 const trackerStartupIssue = process.env.GAUSSIANEDIT_TRACKER_STARTUP_ISSUE?.trim();
-const orchestrationOrigin = process.env.GAUSSIANEDIT_ORCHESTRATION_BASE_URL?.trim();
+const orchestrationBaseUrl = process.env.GAUSSIANEDIT_ORCHESTRATION_BASE_URL?.trim();
+const orchestrationOrigin = orchestrationBaseUrl
+  ? new URL(orchestrationBaseUrl).origin
+  : '';
 const orchestrationApiToken = process.env.GAUSSIANEDIT_ORCHESTRATION_API_TOKEN?.trim();
 const sitesBypassToken = process.env.GAUSSIANEDIT_SITES_BYPASS_TOKEN?.trim();
 
@@ -164,7 +167,7 @@ export default defineConfig({
           changeOrigin: true,
           headers: {
             Authorization: `Bearer ${orchestrationApiToken}`,
-            ...(sitesBypassToken ? { 'x-sites-bypass-token': sitesBypassToken } : {}),
+            ...(sitesBypassToken ? { 'OAI-Sites-Authorization': `Bearer ${sitesBypassToken}` } : {}),
           },
         },
       } : {}),
