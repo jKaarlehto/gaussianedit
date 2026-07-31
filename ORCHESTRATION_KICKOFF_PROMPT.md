@@ -41,6 +41,14 @@ eligible job and must use $dispatch-cloud-work. It must not receive local files
 or dirty state. If native cloud-task creation is unavailable, record
 DISPATCH_UNSUPPORTED instead of creating a substitute task.
 
+Before any local owner or this root task stops, run a remote-preservation
+sweep. Close finished/review-ready work. For each genuinely unfinished claimed
+job, create and push `handoff/<task-id>-<date>`, validate the exact checkpoint
+manifest and upstream ref, release the intentionally stopped local lease as a
+confirmed orphan, authorize dispatch, export, and sync. If work is dirty,
+unpushed, or untested, keep it explicitly local-only with an owner, blocker,
+and next action; never advertise it as cloud-eligible.
+
 After every meaningful local event, synchronize through
 scripts/orchestration-board.ps1 sync. Keep product jobs separate from board and
 automation jobs. Never expose tokens or persist raw lease credentials.
@@ -59,6 +67,9 @@ Completion requires evidence for every item below:
 7. Production generatedAt, lastSeq, and sourceRevision match the final local
    export, and no task is dispatch-eligible without an authorized immutable
    handoff.
+8. Every genuinely unfinished job is either remote-ready on its own verified
+   handoff ref or explicitly local-only and blocked; none is stranded merely
+   because its former owner or the laptop stopped.
 
 Return the exact final commit, upstream comparison, clean status for every
 worktree, test results, board cursor, remaining Edge questions, and any

@@ -1,6 +1,6 @@
 {
   "name": "gaussianedit-orchestration",
-  "version": "0.1.0+codex.20260731114202",
+  "version": "0.1.0+codex.20260731115511",
   "description": "Safely coordinates GaussianEdit development through its authenticated board and immutable cloud handoffs.",
   "author": {
     "name": "GaussianEdit"

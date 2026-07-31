@@ -452,11 +452,24 @@ they do not become interchangeable confidence numbers.
   checkpoint commit. Record dispatch and eventual cleanup audit events. The
   helper never deletes worktrees; branch/worktree cleanup remains a separate
   explicit root action.
+- Before any local owner or root task stops, every claimed job must reach one
+  of three explicit states: finished/review-ready and closed; genuinely
+  unfinished and remote-ready; or local-only blocked because its dirty,
+  unpushed, or untested state fails the handoff gate. Remote-ready is the
+  default for genuinely unfinished work: root creates and pushes the immutable
+  handoff, validates its manifest and upstream ref, releases the intentionally
+  stopped local claim as a confirmed orphan, authorizes dispatch, exports, and
+  syncs the board. No unfinished job may disappear into an unexplained local
+  worktree.
 - For unfinished cloud work, the root creates and pushes
   `handoff/<task-id>-<date>` at the exact reviewed checkpoint. Its manifest
   records base, head, tree, upstream, tests, acceptance criteria, and ownership.
   Cloud receives no dirty state and returns work on a separate task branch or
   pull request, never `main`.
+- The orchestration ledger and handoff manifests are shared by all linked
+  worktrees. Export from `staging` validates each handoff's own local and
+  upstream refs; eligibility must never depend on which worktree is currently
+  checked out.
 - Cleanup happens only after deliberate integration or abandonment and remote
   preservation. Record the cleanup audit event before explicitly removing a
   worktree. No helper may automatically perform destructive Git cleanup.

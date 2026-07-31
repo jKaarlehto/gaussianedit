@@ -48,5 +48,7 @@ NOOP
 ```
 
 This scheduler is a dispatcher, not the root integrator. The repository root
-task prepares and authorizes handoffs, reviews returned work, integrates it,
+task prepares, pushes, validates, and authorizes handoffs before local owners
+stop. The scheduler never creates handoffs or repairs dirty local state. Root
+reviews returned work, integrates it,
 runs gates, pushes candidates, and records user verification.

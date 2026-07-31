@@ -22,6 +22,8 @@ HTTP endpoint for cloud creation.
    repository, branch, immutable commit, ownership, passing tests, acceptance
    criteria, and resume or handoff source. Require no active work or dispatch
    lease. Do not reinterpret an eligibility reason.
+   Handoff preparation is root-only and must already be complete. Never invent,
+   repair, or authorize a handoff from the scheduled dispatcher.
 3. Create one stable idempotency key from the exact task ID and source
    revision. Reuse that key for retries of the same revision. Call
    `dispatch_claim` once with a 900-second lease.

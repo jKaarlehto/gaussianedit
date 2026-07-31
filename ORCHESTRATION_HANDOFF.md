@@ -61,8 +61,11 @@ file. Cleanup events are audit records only.
    merge that exact accepted staging commit to `main`, push it, and record
    `user_verified` authority at the exact stable commit.
 4. **Next development:** publish narrow jobs from the current staging base.
-   Create a `handoff/*` branch only when genuinely unfinished work must continue
-   in cloud while the local machine is offline.
+   Before an owner stops, close finished/review-ready work. Any genuinely
+   unfinished claimed job defaults to a clean pushed `handoff/*` branch,
+   validated manifest, released local claim, dispatch authorization, export,
+   and board sync so cloud can continue while the laptop is offline. Dirty,
+   unpushed, or untested work stays explicitly local-only and blocked.
 
 ## Inspect Evidence: finished-pipeline group editor
 
@@ -116,6 +119,9 @@ a dirty or unpushed branch, an integrated record that does not name exact
 `HEAD`, or a stale/tampered manifest. Worktrees and files persist between local
 tasks; conversation/private context does not. Cloud tasks receive only the
 immutable pushed commit plus explicit handoff.
+The shared orchestration ledger is discovered through Git's common directory,
+so a handoff prepared in its linked worktree remains visible and its own remote
+ref is validated when root exports from `staging`.
 
 ## Exact green definition
 
