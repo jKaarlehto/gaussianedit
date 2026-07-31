@@ -26,4 +26,9 @@ assert.match(script, /dashboard\.lastSeq -eq \(\[int\]\$meta\.nextSeq - 1\)/);
 const syncBlock = script.slice(script.indexOf('"sync" {'), script.indexOf('"publish" {'));
 assert.match(syncBlock, /Export-LocalBoard[\s\S]*dashboard\.json/);
 
+assert.match(script, /"idea" \{/);
+assert.match(script, /IDEA\|role=\$Role\|priority=\$IdeaPriority\|evidence=\$Evidence\|proposal=\$Proposal/);
+assert.match(script, /not jobs, claims, handoffs, or dispatch authority/);
+assert.match(script, /\[\\r\\n\|\]/);
+
 console.log('orchestration board wrapper contract: pass');

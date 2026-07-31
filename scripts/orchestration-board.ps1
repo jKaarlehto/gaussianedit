@@ -9,7 +9,8 @@ param(
     "renew",
     "release",
     "dispatch-claim",
-    "dispatch-result"
+    "dispatch-result",
+    "idea"
     ,"local-claim"
     ,"local-renew"
     ,"local-close"
@@ -33,7 +34,13 @@ param(
   [string]$Outcome,
   [string]$CloudTaskId,
   [string]$CloudTaskUrl,
-  [string]$FailureCode
+  [string]$FailureCode,
+  [ValidateSet("worker", "orchestrator")]
+  [string]$Role,
+  [ValidateSet("P0", "P1", "P2", "P3")]
+  [string]$IdeaPriority,
+  [string]$Evidence,
+  [string]$Proposal
 )
 
 $ErrorActionPreference = "Stop"
@@ -110,6 +117,18 @@ function Require-Value {
   )
   if ([string]::IsNullOrWhiteSpace($Value)) {
     throw "$Name is required for action $Action"
+  }
+}
+
+function Require-BoundedText {
+  param(
+    [Parameter(Mandatory)][string]$Name,
+    [Parameter(Mandatory)][string]$Value,
+    [Parameter(Mandatory)][int]$MaximumLength
+  )
+  Require-Value $Name $Value
+  if ($Value.Length -gt $MaximumLength -or $Value -match "[\r\n|]") {
+    throw "$Name must be one line, pipe-free, and at most $MaximumLength characters"
   }
 }
 
@@ -215,6 +234,23 @@ function Invoke-BoardRequest {
 }
 
 switch ($Action) {
+  "idea" {
+    Require-Value Agent $Agent
+    Require-Value Role $Role
+    Require-Value IdeaPriority $IdeaPriority
+    Require-BoundedText Evidence $Evidence 400
+    Require-BoundedText Proposal $Proposal 600
+    # Ideas deliberately remain comments on the dedicated intake record. They
+    # are not jobs, claims, handoffs, or dispatch authority.
+    $summary = "IDEA|role=$Role|priority=$IdeaPriority|evidence=$Evidence|proposal=$Proposal"
+    $arguments = @(
+      (Get-OrchestrationHelper), "comment", "orchestration-improvement-intake", $Agent, $summary,
+      "--root", $repoRoot,
+      "--next", "Root evaluates evidence and either rejects, defers, or publishes a separate job."
+    )
+    & python @arguments
+    if ($LASTEXITCODE -ne 0) { throw "Idea submission failed" }
+  }
   "local-claim" {
     Require-Value Task $Task
     Require-Value Agent $Agent

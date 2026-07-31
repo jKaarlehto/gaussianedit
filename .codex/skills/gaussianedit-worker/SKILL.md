@@ -36,6 +36,10 @@ for your exact agent identity and the board shows your unexpired lease.
 - Product review questions are rendered in the GaussianEdit editor candidate
   banner. Never turn branch names, internal review tasks, shell proofs, or WIP
   checkpoints into user Acceptance items.
+- If you identify a workflow improvement, submit one bounded idea through the
+  board wrapper with role, evidence, proposal, and priority. The idea is
+  separate from your job and gives you no authority to implement, dispatch,
+  integrate, or verify it. Continue only the task you already own.
 
 ## Close
 

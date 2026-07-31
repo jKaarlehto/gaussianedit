@@ -21,6 +21,16 @@ branch, every worktree, every changed/untracked file, recent commits, upstreams,
 the local orchestration summary/inbox/export, and the authenticated production
 board. Do not open or control any browser or start development services.
 
+Treat the bounded `orchestration-improvement-intake` timeline as proposals,
+not work. A worker/orchestrator proposal contains role, evidence, proposal,
+and priority. Evaluate it as root: record reject/defer, or publish a separate
+job with normal ownership and acceptance. It never self-authorizes
+implementation, cloud dispatch, integration, or user verification. Prioritize
+eligible board/site/connector/framework maintenance needed to keep this loop
+truthful, then the highest-priority product work. Board/system tasks are
+agent-verifiable by default; ask the user only for genuinely visual,
+interactive, or policy decisions.
+
 Use inexpensive Luna agents when available, otherwise the cheapest available
 worker model, for independent read-only scans of: (1) product
 WIP and test coverage, (2) Git/worktree provenance and duplicate changes, and
@@ -57,6 +67,12 @@ preserve it in history, and clear the item from the active banner only after the
 decision has been imported successfully. If the banner-to-board bridge is not
 implemented, publish and complete that bounded bridge as the first workflow
 task; never pretend browser-local state is visible to cloud orchestration.
+
+For board/system actions, `Looks good` is a recorded decision, not Git or
+completion authority: verify the evidence, consume it, then archive the item.
+Keep `Back to loop` and its comment pending until it is routed to a separately
+published task. Product decisions remain solely in the GaussianEdit editor
+Acceptance banner; never duplicate them on the board.
 
 Use cloud dispatch only for genuinely unfinished work preserved at a clean,
 pushed immutable handoff commit. The scheduled dispatcher may claim at most one

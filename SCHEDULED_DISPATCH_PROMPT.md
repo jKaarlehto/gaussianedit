@@ -35,6 +35,16 @@ the task is authorized and eligible and the matching job contains a clean,
 pushed immutable handoff with repository, branch, commit, ownership, tests,
 acceptance criteria, and resume source.
 
+Before choosing, read the bounded improvement-idea intake from the status
+timeline. Ideas carry a role, evidence, proposal, and priority; they are not
+jobs and never authorize themselves. A scheduled dispatcher must not publish
+one: it may only select an already-published eligible maintenance job that a
+root task has linked to the evidence. When selecting a real handoff, prefer an
+eligible board/site/connector/framework maintenance job, then an eligible
+product handoff. Default board/system work to agent verification; human
+acceptance is reserved for visual, interactive, or policy decisions. This
+still permits at most one dispatch in this run.
+
 Atomically claim the dispatch first. Only after that claim succeeds, use a
 native Codex cloud task-creation action if this scheduled-task host exposes
 one. The worker prompt must require the new cloud task to independently read
@@ -48,6 +58,12 @@ dispatch lease expires. If this host cannot create a native Codex cloud task,
 record DISPATCH_UNSUPPORTED through the plugin. Never create a local task as a
 substitute. Never publish or release jobs, merge, force-push, delete branches
 or worktrees, expose credentials, or dispatch dirty/unpushed work.
+
+For board/system feedback, treat `Looks good` as a recorded action that an
+agent consumes and archives only after verifying evidence. Keep `Back to loop`
+and its note pending until root has routed it into a separately published job.
+Product feedback is handled only through the GaussianEdit editor's Acceptance
+banner; never present a duplicate product approval on the board.
 
 If nothing is safely eligible, respond exactly:
 NOOP

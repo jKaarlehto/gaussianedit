@@ -47,6 +47,27 @@ skill defines the root role.
   durable import is acknowledged. Only explicit acceptance records
   `user_verified` and permits promotion from `staging` to `main`.
 
+## Improvement ideas and board decisions
+
+- A worker or orchestrator may submit a bounded improvement idea with
+  `scripts/orchestration-board.ps1 idea -Agent <id> -Role worker|orchestrator
+  -IdeaPriority P0..P3 -Evidence <one-line-fact> -Proposal <one-line-change>`.
+  The wrapper records a typed `IDEA` comment on the dedicated
+  `orchestration-improvement-intake` record. It is visible in the board's
+  timeline, but is deliberately not a job, claim, handoff, dispatch authority,
+  integration record, or user-verification record.
+- Root evaluates each idea against current evidence, duplication, ownership,
+  security, and user value. Root records `reject`, `defer`, or the stable task
+  ID it published separately. An idea never authorizes its own implementation.
+- Board/system work defaults to agent verification. Ask for human acceptance
+  only when a visual/interactive behavior, product decision, or policy choice
+  genuinely requires it.
+- For board/system items, `Looks good` is only a recorded decision. Consume and
+  archive it after an agent verifies the stated evidence. `Back to loop` stays
+  pending with its note until root routes it to a separately published task.
+  For product items, the GaussianEdit editor's Acceptance banner is the sole
+  decision surface; the board only reflects its acknowledged result.
+
 ## Cloud continuation
 
 Cloud dispatch requires a clean, tested, pushed immutable handoff commit and a
@@ -54,6 +75,10 @@ validated manifest. Authorize one dispatch only after the local owner stops.
 The scheduled dispatcher reads the authenticated connector status, claims at
 most one eligible task, creates one cloud task, and records the result before
 lease expiry. Dirty, unpushed, inferred, or context-only work fails closed.
+On every scheduled pass, evaluate eligible board/site/connector/framework
+maintenance handoffs before product handoffs. Evaluate the bounded idea inbox
+as root input before selecting work, but never dispatch an idea itself. Select
+at most one already-published eligible job.
 
 ## Finish a turn
 
