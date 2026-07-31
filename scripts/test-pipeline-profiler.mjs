@@ -151,8 +151,21 @@ const cappedMessage = profiler.recordFrontendError({
 });
 assert.equal(cappedMessage.message.length, 240, 'frontend error messages stay bounded');
 
+const secretMessage = profiler.recordFrontendError({
+  stage: PIPELINE_STAGES.TRACKER_UPLOAD,
+  runId: 'run-7',
+  source: {
+    providerId: 'https://tracker.invalid/upload?token=source-secret',
+  },
+  error: new Error(
+    'Authorization: Bearer abc.def.ghi https://tracker.invalid/result?api_key=query-secret',
+  ),
+});
+assert.equal(secretMessage.source.providerId, '[url]');
+assert.equal(secretMessage.message, 'Bearer [redacted] [url]');
+
 const outcomes = profiler.snapshot().events.map(({ outcome }) => outcome);
-assert.deepEqual(outcomes, ['ok', 'ok', 'canceled', 'stale', 'error', 'error']);
+assert.deepEqual(outcomes, ['ok', 'ok', 'canceled', 'stale', 'error', 'error', 'error']);
 
 let aggregationNow = 0;
 const aggregation = createPipelineProfiler({

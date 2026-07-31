@@ -468,7 +468,10 @@ function exceededBudgets(bytes, budgets) {
 function sanitizeMessage(value) {
   if (value == null) return null;
   return String(value)
+    .replace(/\b(?:authorization\s*:\s*)?bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+    .replace(/\b(access_token|api[_-]?key|token|secret|password)\s*[:=]\s*[^&\s,;"']+/gi, '$1=[redacted]')
     .replace(/\b(prompt|textPrompt|queryText)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^,;\r\n]+)/gi, '$1=[redacted]')
+    .replace(/\bhttps?:\/\/[^\s"'<>]+/gi, '[url]')
     .replace(/(["'])(?:file:\/\/\/|[A-Za-z]:\\|\\\\|\/(?:Users|home|tmp|var|mnt)\/)[^"']+\1/gi, '[path]')
     .replace(/\bfile:\/\/\/[^\s"'<>]+/gi, '[path]')
     .replace(/(?:[A-Za-z]:\\|\\\\)[^\s"'<>]+/g, '[path]')
