@@ -10,7 +10,11 @@ const servers = mcp.mcpServers;
 assert.deepEqual(Object.keys(servers), ["gaussianedit-orchestration"]);
 assert.deepEqual(servers["gaussianedit-orchestration"], {
   type: "http",
-  url: "https://gaussianedit-orchestration-connector.juhana-kaa.chatgpt.site/api/mcp"
+  url: "https://gaussianedit-orchestration-connector.juhana-kaa.chatgpt.site/api/mcp",
+  oauth: {
+    authServerMetadataUrl: "https://gaussianedit-orchestration-connector.juhana-kaa.chatgpt.site/.well-known/oauth-authorization-server",
+    scopes: "board:read worker:write"
+  }
 });
 
 const settings = JSON.parse(await text(".claude/settings.json"));

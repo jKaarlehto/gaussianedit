@@ -2,7 +2,11 @@
   "mcpServers": {
     "gaussianedit-orchestration": {
       "type": "http",
-      "url": "https://gaussianedit-orchestration-connector.juhana-kaa.chatgpt.site/api/mcp"
+      "url": "https://gaussianedit-orchestration-connector.juhana-kaa.chatgpt.site/api/mcp",
+      "oauth": {
+        "authServerMetadataUrl": "https://gaussianedit-orchestration-connector.juhana-kaa.chatgpt.site/.well-known/oauth-authorization-server",
+        "scopes": "board:read worker:write"
+      }
     }
   }
 }
