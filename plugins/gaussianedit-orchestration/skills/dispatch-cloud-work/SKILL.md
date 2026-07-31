@@ -52,4 +52,4 @@ If nothing is safely eligible, respond exactly `NOOP`.
   worktrees, expose credentials, or dispatch dirty or unpushed work.
 - Never renew without a meaningful checkpoint.
 - Do not turn worker completion into integration proof. Root review and human
-  Edge verification remain separate authority levels.
+  user Acceptance testing remain separate authority levels.

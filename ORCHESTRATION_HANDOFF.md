@@ -7,20 +7,19 @@ Read `AGENTS.md`, `PRODUCT_VISION.md`, `UI_MODEL.md`,
 
 ## Current orchestration snapshot
 
-- The production board was synchronized when this handoff was written; always
-  compare its live cursor with the latest local export before acting. The completed
-  OAuth smoke claim is released, and no raw work token remains in generated
-  job state.
-- No product job is currently authorized for cloud dispatch. That is correct:
-  the integration checkout is dirty, no immutable handoff manifest exists, and
-  the reviewed WIP has not received root `integrated` authority.
-- Three inexpensive read-only Luna scans were used to inventory product WIP,
-  orchestration integrity, and offline dispatch. Scanning creates no ownership
-  or completion authority.
-- The next root task is cleanup orchestration, not new feature expansion:
-  classify the shared diff, mark superseded records, run the required gates,
-  and partition the smallest coherent review/integration tranches.
-- The repo plugin under `.agents/plugins/plugins/gaussianedit-orchestration/`
+- `staging` is the root-owned candidate branch. `main` is the last explicitly
+  user-accepted state. Workers use isolated `feat/<task-id>` branches and never
+  merge directly into either branch.
+- Candidate `2026.07.31-rc4` is integrated and shell-verified on the initial
+  staging line but remains unaccepted until the user completes its bounded
+  Acceptance testing checklist. It must not be advanced to `main` yet.
+- No implementation or dispatch lease is active. No product job is authorized
+  for cloud dispatch because there is no genuinely unfinished clean immutable
+  handoff. This is a safe idle state, not missing orchestration.
+- The three inexpensive read-only Luna scans and the adversarial runtime review
+  are complete. Their selected fixes were integrated before rc4; scanning
+  creates no ownership or completion authority.
+- The repo plugin under `plugins/gaussianedit-orchestration/`
   combines the authenticated connector with `$dispatch-cloud-work`. The remote
   web/mobile plugin must be updated from this package before a scheduled task
   can rely on the bundled skill.
@@ -31,31 +30,13 @@ Read `AGENTS.md`, `PRODUCT_VISION.md`, `UI_MODEL.md`,
 
 ## Immutable remote checkpoint
 
-- Integration branch: `feat/object-refinement`
-- Pushed checkpoint: `ed0c9a7afd46c4d6f6d47e78a122edacacfe7a32`
-- Upstream at capture: `origin/feat/object-refinement`
-- The shared main worktree contains uncommitted integration work after that
-  checkpoint. A cloud task must use an exact later pushed commit, never assume
-  this dirty state exists remotely.
-
-## Shared main-worktree provenance
-
-There is no active implementation lease in the shared checkout. Root owns the
-preserved dirty state until it republishes narrow jobs. Only one future agent
-may edit `main.js`.
-
-| Owner | Priority | Files / responsibility |
-| --- | --- | --- |
-| root orchestrator | P0 | Review, integration, Git, candidate metadata, routing Edge feedback; unassigned shared WIP remains root-owned until explicitly repartitioned |
-| root orchestrator | P0 | Preserved `main.js`, scan coordinator, memory budget, compact lookup, and related tests until review partitions them |
-| root orchestrator | P1 | `AGENTS.md`, `.codex/orchestration/`, `ORCHESTRATION_HANDOFF.md`, board wrapper, and plugin package |
-| no active owner | P1 | Hosted/cloud continuation; dispatch remains closed until a clean pushed handoff is deliberately authorized |
-
-Current dirty integration files also include `index.html`, `lift.js`,
-`multiviewRefinement.js`, `pipelineProfiler.js`,
-`pipelineInstrumentation.js`, their focused tests, and the feature-off
-`evidenceInspector.js` tranche. Treat these as preserved shared WIP; inspect
-their diffs and ask the root before assigning overlapping ownership.
+- Candidate branch: `staging`
+- Initial staging checkpoint: `83dc66f7a89962ce6a6abf39824af4cd9e7a5e9e`
+- Candidate upstream: `origin/staging`
+- Stable branch at capture: `main`
+- Stable checkpoint: `1251e77b91daf18582f12d49d805937ab3d67486`
+- Historical source branch: `feat/object-refinement` at the same initial staging
+  checkpoint. Preserve it for provenance; do not keep integrating into it.
 
 ## Preserved legacy worktrees
 
@@ -73,21 +54,15 @@ file. Cleanup events are audit records only.
 
 ## Active WIP and order
 
-1. **P0 root cleanup:** review the current shared WIP against `ed0c9a7`, map
-   every changed file to one coherent tranche, and identify duplicate or
-   superseded board records before assigning implementation.
-2. **P0:** make confirmed `Use this object` start the real ordered all-sides
-   pipeline through `ScanCoordinator`; accepted tray evidence must update the
-   3D object.
-3. **P0:** preserve immutable selection-frame/matrix parity and prevent stale
-   2D raster overlays from appearing over a moved 3D camera.
-4. **P0:** keep the 3D preview independent: no YOLO HUD, real Gaussian mode,
-   continuous hover pause/resume phase, stable framing, no grey unavailable
-   control presented as complete.
-5. **P1:** retain revisioned postcard previews, cancellation, byte budgets,
-   profiler attribution, and bounded diagnostics.
-6. **P2 / feature-off:** evidence fusion research and Inspect Evidence. It may
-   not delay or enter the live path ahead of the P0 flow.
+1. **User Acceptance testing:** run the four rc4 checks in the in-app banner.
+2. **Root feedback routing:** record each item explicitly as `OK`, `ISSUE`, or
+   still waiting. An issue becomes a new isolated job; it does not mutate rc4.
+3. **Promotion:** only when all candidate items are accepted, fast-forward or
+   merge that exact accepted staging commit to `main`, push it, and record
+   `user_verified` authority at the exact stable commit.
+4. **Next development:** publish narrow jobs from the current staging base.
+   Create a `handoff/*` branch only when genuinely unfinished work must continue
+   in cloud while the local machine is offline.
 
 ## Inspect Evidence: finished-pipeline group editor
 

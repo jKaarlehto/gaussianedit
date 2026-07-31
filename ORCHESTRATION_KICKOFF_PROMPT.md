@@ -30,10 +30,10 @@ one main.js owner. Root reviews every patch and alone records integrated or
 user_verified authority.
 
 Run focused tests and the complete AGENTS.md shell gate for each integrated
-tranche. Commit intentionally to feat/object-refinement, push the exact reviewed
+tranche. Commit intentionally to staging, push the exact reviewed
 candidate, and publish a candidate banner only if the required gates and
-independent review pass. Edge-only items remain explicitly pending until the
-user verifies them; do not call shell success visual proof.
+independent review pass. Acceptance-testing items remain explicitly pending
+until the user verifies them; do not call shell success visual proof.
 
 Use cloud dispatch only for genuinely unfinished work preserved at a clean,
 pushed immutable handoff commit. The scheduled dispatcher may claim at most one
@@ -49,10 +49,11 @@ Completion requires evidence for every item below:
 
 1. Every changed file and worktree is integrated, deliberately abandoned with
    preserved remote provenance, or published as an explicit unfinished job.
-2. The canonical integration worktree and every active task worktree are clean.
-3. feat/object-refinement HEAD exactly equals its configured upstream.
+2. The canonical staging worktree and every active task worktree are clean.
+3. staging HEAD exactly equals origin/staging; main remains at the last
+   explicitly user-accepted candidate.
 4. Applicable focused tests and the full required shell gate pass at that HEAD.
-5. Board task states distinguish worker evidence, root integration, and Edge
+5. Board task states distinguish worker evidence, root integration, and user
    verification and name the exact commits they prove.
 6. No active or expired work/dispatch lease remains accidentally open.
 7. Production generatedAt, lastSeq, and sourceRevision match the final local

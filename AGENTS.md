@@ -49,7 +49,10 @@ tranches. Treat their live feedback as the primary visual acceptance signal.
 
 ## Current integration baseline
 
-Work on `feat/object-refinement`. The important integrated commits are:
+Root integration happens on `staging`; accepted candidates advance to `main`.
+The historical `feat/object-refinement` branch is preserved as provenance for
+the initial staging line and is not the continuing integration target. The
+important integrated commits are:
 
 - `e0c725b` — isolate scan visibility from the live scene.
 - `356368c` — define stable pipeline stages and actor/status language.
@@ -354,7 +357,7 @@ they do not become interchangeable confidence numbers.
   partition the remaining work into non-overlapping coherent tranches. Do not
   start cleanup implementation until the board names current ownership,
   acceptance criteria, Git mode, and the next root action.
-- `feat/object-refinement` is the canonical integration branch. Before each
+- `staging` is the canonical root-owned integration branch. Before each
   delegation, the root records its exact base commit. By default, a new
   implementation task receives an isolated `feat/<task-id>` branch and
   worktree created from that base.
@@ -381,14 +384,15 @@ they do not become interchangeable confidence numbers.
   target `main`, or modify unrelated changes. Closeout records the exact head
   commit and whether the worktree is dirty.
 - The root reviews `base..head` and reruns applicable gates, then integrates
-  intentionally into `feat/object-refinement`, records `integrated` authority
+  intentionally into `staging`, records `integrated` authority
   at the exact resulting commit, and pushes it. A worker commit or clean task
   branch is never integration proof.
-- `feat/object-refinement` is the accumulated candidate branch. Agents never
-  merge into it directly: root may integrate multiple reviewed tranches there,
+- `staging` is the accumulated candidate branch. Agents never merge into it
+  directly: root may integrate multiple reviewed tranches there,
   publish one named candidate, collect one bounded Acceptance testing pass in
   Microsoft Edge from the user, and only then advance the accepted candidate
-  to stable/main.
+  to `main`. `main` contains only user-accepted candidates; do not push an
+  unaccepted staging tip to `main`.
 - P0/P1/P2 express priority, not completion or user ownership. A dashboard
   request for user action appears only when a named candidate containing that
   item is published for Acceptance testing; review, integration, blocker
@@ -501,7 +505,7 @@ they do not become interchangeable confidence numbers.
   separate from the cloud `dispatchQueue`. Legacy task events stay readable but
   cannot be started without a published job.
 - Do not declare an orchestration or cleanup goal complete until Git and the
-  board reconcile. Inspect every worktree; the canonical integration worktree
+  board reconcile. Inspect every worktree; the canonical `staging` worktree
   and every active task worktree must be clean, each retained branch must have
   an explicit board state and remote preservation, `HEAD` must equal its
   configured upstream, root `integrated` authority must name that exact commit,
