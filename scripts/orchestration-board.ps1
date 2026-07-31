@@ -34,7 +34,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$secretRoot = Join-Path $repoRoot ".codex\orchestration\secrets"
+$gitCommonDir = (& git -C $repoRoot rev-parse --path-format=absolute --git-common-dir).Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($gitCommonDir)) {
+  throw "Unable to resolve the shared Git directory"
+}
+$orchestrationRoot = Join-Path (Split-Path -Parent $gitCommonDir) ".codex\orchestration"
+$secretRoot = Join-Path $orchestrationRoot "secrets"
 
 function Get-ConfiguredValue {
   param([Parameter(Mandatory)][string]$Name)
@@ -106,7 +111,7 @@ function Require-Value {
 
 function Get-ProtocolRoute {
   param([Parameter(Mandatory)][string]$Name)
-  $configPath = Join-Path $repoRoot ".codex\orchestration\config.json"
+  $configPath = Join-Path $orchestrationRoot "config.json"
   if (-not (Test-Path -LiteralPath $configPath)) {
     throw "Missing orchestration config: $configPath"
   }
@@ -133,8 +138,8 @@ function Resolve-BoardUri {
 }
 
 function Export-LocalBoard {
-  $dashboardPath = Join-Path $repoRoot ".codex\orchestration\dashboard.json"
-  $metaPath = Join-Path $repoRoot ".codex\orchestration\meta.json"
+  $dashboardPath = Join-Path $orchestrationRoot "dashboard.json"
+  $metaPath = Join-Path $orchestrationRoot "meta.json"
   if ((Test-Path -LiteralPath $dashboardPath) -and (Test-Path -LiteralPath $metaPath)) {
     $dashboard = Get-Content -Raw -LiteralPath $dashboardPath | ConvertFrom-Json
     $meta = Get-Content -Raw -LiteralPath $metaPath | ConvertFrom-Json
@@ -200,7 +205,7 @@ switch ($Action) {
   "sync" {
     $syncPath = if ([string]::IsNullOrWhiteSpace($BodyPath)) {
       Export-LocalBoard
-      Join-Path $repoRoot ".codex\orchestration\dashboard.json"
+      Join-Path $orchestrationRoot "dashboard.json"
     } else {
       $BodyPath
     }
