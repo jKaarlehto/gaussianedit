@@ -111,7 +111,18 @@ const bridge = createCandidateFeedbackBridge({
   endpoint: 'https://not-allowed.example/feedback',
   fetchImpl: async (url, options) => {
     request = { url, options };
-    return { ok: true, json: async () => ({ taskId: route.taskId, action: 'looks_good' }) };
+    return {
+      ok: true,
+      json: async () => ({
+        taskId: route.taskId,
+        action: 'looks_good',
+        candidateId: 'candidate-42',
+        itemId: 'fifo',
+        owner: route.owner,
+        workspace: route.workspace,
+        idempotencyKey: 'candidate-feedback:candidate-42:fifo:ok',
+      }),
+    };
   },
 });
 await bridge.submit({ candidateId: 'candidate-42', itemId: 'fifo', ...route, decision: 'ok', comment: '' });
@@ -122,6 +133,28 @@ assert.deepEqual(JSON.parse(request.options.body), {
   idempotencyKey: 'candidate-feedback:candidate-42:fifo:ok',
   candidateId: 'candidate-42', itemId: 'fifo', owner: route.owner, workspace: route.workspace,
 });
+
+const mismatchedAcknowledgement = createCandidateFeedbackBridge({
+  fetchImpl: async () => ({
+    ok: true,
+    json: async () => ({
+      taskId: route.taskId,
+      action: 'looks_good',
+      candidateId: 'candidate-42',
+      itemId: 'other-item',
+      owner: route.owner,
+      workspace: route.workspace,
+      idempotencyKey: 'candidate-feedback:candidate-42:fifo:ok',
+    }),
+  }),
+});
+await assert.rejects(
+  () => mismatchedAcknowledgement.submit({
+    candidateId: 'candidate-42', itemId: 'fifo', ...route, decision: 'ok', comment: '',
+  }),
+  /keep this item pending/i,
+  'a mismatched acknowledgement is not evidence of durable import',
+);
 
 class FakeStorage {
   constructor() {

@@ -83,7 +83,14 @@ export function createCandidateFeedbackBridge({
       // A non-JSON acknowledgement is never evidence of durable import.
     }
     const expectedAction = feedback.decision === 'ok' ? 'looks_good' : 'back_to_loop';
-    if (!response.ok || body?.taskId !== feedback.taskId || body?.action !== expectedAction) {
+    const acknowledgementMatches = body?.taskId === feedback.taskId
+      && body?.action === expectedAction
+      && body?.candidateId === feedback.candidateId
+      && body?.itemId === feedback.itemId
+      && body?.owner === feedback.owner
+      && body?.workspace === feedback.workspace
+      && body?.idempotencyKey === feedback.idempotencyKey;
+    if (!response.ok || !acknowledgementMatches) {
       throw new Error(boundedText(body?.error, 180)
         || 'Feedback was not imported. Keep this item pending and try again.');
     }
