@@ -527,8 +527,14 @@ they do not become interchangeable confidence numbers.
   `DISPATCH_UNSUPPORTED` after a successful dispatch claim and creates no
   substitute local task.
 - Product jobs and board/automation jobs are separate status categories.
-  Status-site, orchestration, dispatcher, and cloud-dashboard work never counts
-  toward product Done, Under way, Waiting, or Needs attention totals.
+  **Product means the GaussianEdit 3D editor itself:** selection, segmentation,
+  Gaussian lifting/refinement, scans, rendering, docking, editor performance,
+  and user-visible editor behavior. Status-site, board, connector,
+  orchestration, agent hooks, Git/worktree audits, dispatcher, release process,
+  candidate-feedback plumbing, and cloud-dashboard work are **System** tasks.
+  They never count toward product Done, Under way, Waiting, or Needs attention
+  totals merely because they coordinate, review, deploy, or validate product
+  work. Every agent publishing or syncing a task must preserve this taxonomy.
 - The local helper remains the repository authority. After meaningful local
   events, root runs `scripts/orchestration-board.ps1 sync`; the wrapper exports
   only when the event cursor advanced and resolves every route from

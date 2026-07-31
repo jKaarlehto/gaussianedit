@@ -198,6 +198,32 @@ function Get-OrchestrationHelper {
   return $helper
 }
 
+function Set-TaskCategories {
+  param([Parameter(Mandatory)][object]$Document)
+
+  foreach ($task in @($Document.tasks)) {
+    if ($null -eq $task) { continue }
+    $taskId = [string]($task.task ?? $task.taskId)
+    $files = if ($task.latest -and $task.latest.files) {
+      @($task.latest.files)
+    } elseif ($task.files) {
+      @($task.files)
+    } else {
+      @()
+    }
+    $systemFiles = $files.Count -gt 0 -and @(
+      $files | Where-Object {
+        [string]$_ -notmatch '^(?:\.codex/|\.agents/|\.claude/|AGENTS\.md$|AGENT_HANDOFF\.md$|ORCHESTRATION|SCHEDULED_DISPATCH_PROMPT\.md$|dashboard-site/|scripts/(?:orchestration|export-orchestration|agent-start-hook))'
+      }
+    ).Count -eq 0
+    $systemTask = $taskId -match '^(?:agent-start|audit-|board-|candidate-feedback-|candidate-workflow-|cloud-dashboard|cloud-dispatch|connector-|orchestration-|scheduled-codex-|staging-release-|status-)'
+    $category = if ($systemTask -or $systemFiles) { 'system' } else { 'product' }
+    $task | Add-Member -NotePropertyName category -NotePropertyValue $category -Force
+  }
+
+  return $Document
+}
+
 function Invoke-BoardRequest {
   param(
     [Parameter(Mandatory)][ValidateSet("GET", "POST")][string]$Method,
@@ -311,6 +337,10 @@ switch ($Action) {
     }
     $resolvedBody = Resolve-Path -LiteralPath $syncPath
     $body = Get-Content -Raw -LiteralPath $resolvedBody | ConvertFrom-Json
+    # Product means work on the GaussianEdit 3D editor. Board, connector,
+    # orchestration, agent, audit, dispatch, release, and workflow plumbing are
+    # system work even when they coordinate or validate product changes.
+    $body = Set-TaskCategories $body
     $result = Invoke-BoardRequest POST "sync" $body
     $result | ConvertTo-Json -Depth 20
   }

@@ -25,6 +25,11 @@ assert.match(script, /dashboard\.lastSeq -eq \(\[int\]\$meta\.nextSeq - 1\)/);
 
 const syncBlock = script.slice(script.indexOf('"sync" {'), script.indexOf('"publish" {'));
 assert.match(syncBlock, /Export-LocalBoard[\s\S]*dashboard\.json/);
+assert.match(syncBlock, /Set-TaskCategories \$body/);
+assert.match(script, /Product means work on the GaussianEdit 3D editor/);
+assert.match(script, /candidate-feedback-\|candidate-workflow-/);
+assert.match(script, /connector-\|orchestration-/);
+assert.match(script, /\$category = if \(\$systemTask -or \$systemFiles\) \{ 'system' \} else \{ 'product' \}/);
 
 assert.match(script, /"idea" \{/);
 assert.match(script, /IDEA\|role=\$Role\|priority=\$IdeaPriority\|evidence=\$Evidence\|proposal=\$Proposal/);
