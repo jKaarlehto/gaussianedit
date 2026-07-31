@@ -3,6 +3,14 @@ import fs from 'node:fs';
 
 const script = fs.readFileSync(new URL('./orchestration-board.ps1', import.meta.url), 'utf8');
 const config = JSON.parse(fs.readFileSync(new URL('../.codex/orchestration/config.json', import.meta.url), 'utf8'));
+const scheduledPrompt = fs.readFileSync(new URL('../SCHEDULED_DISPATCH_PROMPT.md', import.meta.url), 'utf8');
+const kickoffPrompt = fs.readFileSync(new URL('../ORCHESTRATION_KICKOFF_PROMPT.md', import.meta.url), 'utf8');
+const agentGuide = fs.readFileSync(new URL('../AGENTS.md', import.meta.url), 'utf8');
+const pluginManifest = JSON.parse(fs.readFileSync(new URL('../.agents/plugins/plugins/gaussianedit-orchestration/.codex-plugin/plugin.json', import.meta.url), 'utf8'));
+const pluginApp = JSON.parse(fs.readFileSync(new URL('../.agents/plugins/plugins/gaussianedit-orchestration/.app.json', import.meta.url), 'utf8'));
+const marketplace = JSON.parse(fs.readFileSync(new URL('../.agents/plugins/marketplace.json', import.meta.url), 'utf8'));
+const dispatchSkill = fs.readFileSync(new URL('../.agents/plugins/plugins/gaussianedit-orchestration/skills/dispatch-cloud-work/SKILL.md', import.meta.url), 'utf8');
+const frameworkExport = fs.readFileSync(new URL('./export-orchestration-framework.mjs', import.meta.url), 'utf8');
 
 for (const route of [
   'status',
@@ -30,5 +38,46 @@ assert.match(script, /"idea" \{/);
 assert.match(script, /IDEA\|role=\$Role\|priority=\$IdeaPriority\|evidence=\$Evidence\|proposal=\$Proposal/);
 assert.match(script, /not jobs, claims, handoffs, or dispatch authority/);
 assert.match(script, /\[\\r\\n\|\]/);
+
+assert.equal(pluginManifest.name, 'gaussianedit-orchestration');
+assert.equal(pluginManifest.skills, './skills/');
+assert.equal(pluginManifest.apps, './.app.json');
+assert.equal(typeof pluginApp.apps['gaussianedit-orchestration'].id, 'string');
+const marketplaceEntry = marketplace.plugins.find(({ name }) => name === pluginManifest.name);
+assert.equal(marketplaceEntry?.source?.path, './plugins/gaussianedit-orchestration');
+assert.equal(marketplaceEntry?.policy?.installation, 'AVAILABLE');
+assert.equal(marketplaceEntry?.policy?.authentication, 'ON_INSTALL');
+assert.match(dispatchSkill, /draft PR/);
+assert.match(dispatchSkill, /github-pr:<number>:comment:<id>/);
+assert.match(dispatchSkill, /DISPATCH_UNSUPPORTED/);
+assert.match(dispatchSkill, /Do not require the GitHub-triggered cloud chat[\s\S]*worker lease/);
+assert.doesNotMatch(dispatchSkill, /native Codex cloud task-creation tool/i);
+
+for (const content of [scheduledPrompt, dispatchSkill]) {
+  assert.match(content, /GaussianEdit Orchestration/);
+  assert.match(content, /GitHub/);
+  assert.match(content, /@codex/);
+  assert.match(content, /idempoten/i);
+  assert.match(content, /draft (?:PR|pull request)/i);
+  assert.match(content, /staging/);
+  assert.match(content, /DISPATCH_UNSUPPORTED/);
+  assert.match(content, /SYSTEM/);
+  assert.match(content, /PRODUCT/);
+  assert.match(content, /priority(?:,)? then age/);
+  assert.doesNotMatch(content, /native Codex cloud task-creation action/i);
+  for (const action of ['orchestration_status', 'dispatch_claim', 'dispatch_result', 'search_prs', 'get_pr_info', 'fetch_issue_comments', 'create_pull_request', 'add_comment_to_issue']) {
+    assert.match(content, new RegExp(`\\b${action}\\b`), `missing documented connector action ${action}`);
+  }
+}
+
+assert.match(scheduledPrompt, /github-pr:<number>:comment:<id>/);
+assert.match(scheduledPrompt, /Do not claim or promise a worker lease/);
+assert.match(kickoffPrompt, /npm run dev/);
+assert.match(kickoffPrompt, /Microsoft Edge/);
+assert.match(kickoffPrompt, /do not default them to Luna or\s+the cheapest model/);
+assert.match(agentGuide, /\.agents\/plugins\/plugins\/gaussianedit-orchestration\//);
+assert.match(frameworkExport, /dispatch-plugin-manifest/);
+assert.match(frameworkExport, /dispatch-plugin-app/);
+assert.match(frameworkExport, /dispatch-skill/);
 
 console.log('orchestration board wrapper contract: pass');

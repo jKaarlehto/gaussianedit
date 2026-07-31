@@ -20,7 +20,12 @@ skill defines the root role.
 4. Publish, confirm queued state, acquire the private local claim, and confirm
    the expected live lease on the board before spawning any worker. This gate
    applies to implementation, review, audit, and research workers.
-5. Use the cheapest capable worker model unless the user requests another.
+5. After framework and safety checks, inspect exact service PIDs/commands. If
+   the supervised staging stack is absent, start `npm run dev` from the
+   canonical staging worktree as the first operational action; never duplicate
+   a running stack or open/control a browser. The user validates in Edge.
+6. Reserve Luna/low-cost models for temporary read-only board-status scans.
+   Choose normal implementation and review models for the task's complexity.
 
 ## Coordinate and integrate
 
@@ -58,7 +63,13 @@ skill defines the root role.
   integration record, or user-verification record.
 - Root evaluates each idea against current evidence, duplication, ownership,
   security, and user value. Root records `reject`, `defer`, or the stable task
-  ID it published separately. An idea never authorizes its own implementation.
+  ID it published separately. An idea never authorizes its own publication,
+  implementation, dispatch, integration, or verification.
+- PRODUCT means GaussianEdit 3D editor behavior only. Board, site, connector,
+  orchestration/framework, audit, dispatch, agent, release-plumbing, and
+  maintenance tasks are SYSTEM. Schedule existing eligible SYSTEM cleanup and
+  maintenance by priority then age before existing eligible PRODUCT work by
+  priority then age. Never invent or auto-publish work to fill the queue.
 - Board/system work defaults to agent verification. Ask for human acceptance
   only when a visual/interactive behavior, product decision, or policy choice
   genuinely requires it.
@@ -73,12 +84,16 @@ skill defines the root role.
 Cloud dispatch requires a clean, tested, pushed immutable handoff commit and a
 validated manifest. Authorize one dispatch only after the local owner stops.
 The scheduled dispatcher reads the authenticated connector status, claims at
-most one eligible task, creates one cloud task, and records the result before
-lease expiry. Dirty, unpushed, inferred, or context-only work fails closed.
-On every scheduled pass, evaluate eligible board/site/connector/framework
-maintenance handoffs before product handoffs. Evaluate the bounded idea inbox
-as root input before selecting work, but never dispatch an idea itself. Select
-at most one already-published eligible job.
+most one eligible task, then uses the GitHub plugin to open/reuse the immutable
+handoff's draft PR into `staging` and post one bounded idempotent non-review
+`@codex` implementation comment. It records the GitHub PR/comment identifiers
+and PR URL before the dispatch lease expires. There is no native cloud-task API
+fallback and no API key. Missing GitHub writes, unconfirmed Codex cloud repo
+setup, or unprovable idempotency records `DISPATCH_UNSUPPORTED` and creates no
+substitute. The exclusive board dispatch execution plus GitHub branch/PR/comment
+facts are authoritative. Do not promise the triggered cloud chat can access the
+connector or acquire a worker lease; later scheduled/root runs reconcile PR and
+commit facts. Dirty, unpushed, inferred, or context-only work fails closed.
 
 ## Finish a turn
 

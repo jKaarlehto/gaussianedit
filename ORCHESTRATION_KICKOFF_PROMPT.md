@@ -19,27 +19,38 @@ First read AGENTS.md, ORCHESTRATION_HANDOFF.md, PRODUCT_VISION.md, UI_MODEL.md,
 IMPLEMENTATION_TASKS.md, and FUSION_ARCHITECTURE.md. Inspect the canonical
 branch, every worktree, every changed/untracked file, recent commits, upstreams,
 the local orchestration summary/inbox/export, and the authenticated production
-board. Do not open or control any browser or start development services.
+board. Do not open or control any browser. After framework verification and
+the minimum safe repository/service checks, inspect exact PIDs and command
+lines for the supervised staging stack. If it is already running, do not
+duplicate it; otherwise start `npm run dev` from the canonical `staging`
+worktree as the first operational action. Keep it running and report
+`http://localhost:5173/` plus the supervised stdout/stderr paths. The user
+performs all visual validation manually in Microsoft Edge.
 
 Treat the bounded `orchestration-improvement-intake` timeline as proposals,
 not work. A worker/orchestrator proposal contains role, evidence, proposal,
 and priority. Evaluate it as root: record reject/defer, or publish a separate
 job with normal ownership and acceptance. It never self-authorizes
-implementation, cloud dispatch, integration, or user verification. Prioritize
-eligible board/site/connector/framework maintenance needed to keep this loop
-truthful, then the highest-priority product work. Board/system tasks are
-agent-verifiable by default; ask the user only for genuinely visual,
+implementation, job publication, cloud dispatch, integration, or user
+verification. Prioritize already-published eligible SYSTEM cleanup and
+maintenance by priority then age, followed by already-published eligible
+PRODUCT work by priority then age. SYSTEM includes board, site, connector,
+orchestration/framework, audit, dispatch, agent, release-plumbing, and
+maintenance work. PRODUCT means GaussianEdit 3D editor work only. Board/system
+tasks are agent-verifiable by default; ask the user only for genuinely visual,
 interactive, or policy decisions.
 
 Use inexpensive Luna agents when available, otherwise the cheapest available
-worker model, for independent read-only scans of: (1) product
-WIP and test coverage, (2) Git/worktree provenance and duplicate changes, and
-(3) orchestration/board/cloud-handoff consistency. Scanning grants no completion
-authority. Every scan, review, research, or implementation subagent still
-requires the hard launch gate: publish the exact job, confirm it queued, claim
-through the private wrapper, confirm the visible unexpired lease, and only then
-spawn the agent. Reconcile their evidence yourself. Never reconstruct a lease
-after spawning.
+model, only for temporary independent read-only board-status scans of: (1)
+product WIP and test coverage, (2) Git/worktree provenance and duplicate
+changes, and (3) orchestration/board/cloud-handoff consistency. Scanning grants
+no completion authority. Every scan, review, research, or implementation
+subagent still requires the hard launch gate: publish the exact job, confirm it
+queued, claim through the private wrapper, confirm the visible unexpired lease,
+and only then spawn the agent. Reconcile their evidence yourself. Never
+reconstruct a lease after spawning. Choose normal implementation and review
+worker models for the task's actual complexity; do not default them to Luna or
+the cheapest model.
 
 Preserve all user and agent work. Do not reset, discard, delete, rebase,
 force-push, or blindly cherry-pick. Mark already-incorporated branches and
@@ -77,8 +88,15 @@ Acceptance banner; never duplicate them on the board.
 Use cloud dispatch only for genuinely unfinished work preserved at a clean,
 pushed immutable handoff commit. The scheduled dispatcher may claim at most one
 eligible job and must use $dispatch-cloud-work. It must not receive local files
-or dirty state. If native cloud-task creation is unavailable, record
-DISPATCH_UNSUPPORTED instead of creating a substitute task.
+or dirty state. It uses the documented GitHub path only: open or reuse the
+handoff's draft PR into `staging`, then post one bounded idempotent non-review
+`@codex` implementation comment. Require the GaussianEdit Orchestration and
+GitHub plugins and no API key. If GitHub writes or configured Codex cloud
+repository support are unavailable, record `DISPATCH_UNSUPPORTED`; never use
+an undocumented native cloud-task API. The board's exclusive dispatch record,
+GitHub PR/comment IDs, and later PR/commit reconciliation are authoritative;
+do not assume the GitHub-triggered cloud chat can access connector worker
+leases.
 
 Before any local owner or this root task stops, run a remote-preservation
 sweep. Close finished/review-ready work. For each genuinely unfinished claimed
