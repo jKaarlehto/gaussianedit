@@ -117,6 +117,13 @@ Do not mark visual behavior complete until the user verifies it in Edge.
 
 ## Development services
 
+In a root orchestration run, start or confirm this supervised staging stack as
+the first operational action after the immutable framework and minimum
+repository/service safety checks. Inspect exact PIDs and command lines first;
+never duplicate an existing stack. Keep it running for the user's Microsoft
+Edge Acceptance testing, report its URL and supervised logs, and never open or
+control a browser yourself.
+
 Use the supervised stack:
 
 ```text
@@ -359,6 +366,10 @@ they do not become interchangeable confidence numbers.
   inventory independent product, Git, and orchestration lanes before assigning
   edits. The root reconciles their evidence into the board; scanners never
   claim implementation ownership merely by reporting findings.
+- Reserve Luna or the cheapest available model for temporary read-only
+  board-status scans. Choose normal implementation and review worker models for
+  the task's actual complexity; do not make low-cost scanning policy the
+  default for product workers.
 - In a messy shared worktree, first preserve and classify every diff. Mark
   duplicate or superseded records explicitly, release expired claims, and
   partition the remaining work into non-overlapping coherent tranches. Do not
@@ -516,25 +527,38 @@ they do not become interchangeable confidence numbers.
   continuation requires the manifest's immutable pushed commit.
 - The repo plugin at
   `.agents/plugins/plugins/gaussianedit-orchestration/` bundles the authenticated
-  board connection with `$dispatch-cloud-work`. Local Codex tasks may use the
-  same plugin, but local development still follows this repository contract
-  and the `$orchestrate-development` helper. A web scheduled task can run while
-  the laptop is off only from plugin-visible board data and a pushed immutable
-  handoff; it never receives the local checkout.
+  board connection with `$dispatch-cloud-work`; its manifest, app binding, and
+  skill are real repo files included in the immutable framework. Local Codex
+  tasks may use the same plugin, but local development still follows this
+  repository contract and the `$orchestrate-development` helper. A web
+  scheduled task can run while the laptop is off only from plugin-visible board
+  data and a pushed immutable handoff; it never receives the local checkout.
 - A scheduled heartbeat is a scheduler recurrence, not a work-lease heartbeat.
-  It dispatches at most one eligible job per run. If the scheduled-task host
-  lacks a native Codex cloud-task creation capability, it records
-  `DISPATCH_UNSUPPORTED` after a successful dispatch claim and creates no
-  substitute local task.
+  It dispatches at most one eligible job per run and uses only the documented
+  GitHub path: after the exclusive board dispatch claim, open or reuse the
+  immutable handoff's draft PR into `staging` and post one bounded idempotent
+  non-review `@codex` implementation comment. Record the GitHub PR/comment IDs
+  and PR URL in `dispatch_result`. Require the GaussianEdit Orchestration and
+  GitHub plugins, never an API key or undocumented native cloud-task endpoint.
+  Missing GitHub writes, unconfirmed Codex cloud repository setup, or
+  unprovable idempotency records `DISPATCH_UNSUPPORTED` and creates no
+  substitute. Do not promise that the GitHub-triggered cloud chat can access
+  the connector or acquire a worker lease. The exclusive dispatch execution
+  plus later PR/commit reconciliation are authoritative.
 - Product jobs and board/automation jobs are separate status categories.
-  **Product means the GaussianEdit 3D editor itself:** selection, segmentation,
+  **PRODUCT means the GaussianEdit 3D editor itself:** selection, segmentation,
   Gaussian lifting/refinement, scans, rendering, docking, editor performance,
   and user-visible editor behavior. Status-site, board, connector,
-  orchestration, agent hooks, Git/worktree audits, dispatcher, release process,
-  candidate-feedback plumbing, and cloud-dashboard work are **System** tasks.
-  They never count toward product Done, Under way, Waiting, or Needs attention
-  totals merely because they coordinate, review, deploy, or validate product
-  work. Every agent publishing or syncing a task must preserve this taxonomy.
+  orchestration/framework, agent hooks, Git/worktree audits, dispatcher,
+  release process, candidate-feedback plumbing, cloud-dashboard, and
+  maintenance work are **SYSTEM** tasks. They never count toward product Done,
+  Under way, Waiting, or Needs attention totals merely because they coordinate,
+  review, deploy, or validate product work. Dispatch existing eligible SYSTEM
+  cleanup/maintenance by priority then age before existing eligible PRODUCT
+  work by priority then age. Never invent or auto-publish a job; improvement
+  intake remains a proposal until root explicitly accepts it as a separately
+  published normal job. Every agent publishing or syncing a task must preserve
+  this taxonomy.
 - The local helper remains the repository authority. After meaningful local
   events, root runs `scripts/orchestration-board.ps1 sync`; the wrapper exports
   only when the event cursor advanced and resolves every route from

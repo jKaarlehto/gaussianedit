@@ -1,0 +1,25 @@
+{
+  "name": "gaussianedit-orchestration",
+  "version": "0.2.0",
+  "description": "Dispatches one immutable GaussianEdit handoff through its authenticated board and the documented GitHub Codex trigger.",
+  "author": {
+    "name": "GaussianEdit"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "GaussianEdit Orchestration",
+    "shortDescription": "Dispatch one immutable GaussianEdit handoff safely.",
+    "longDescription": "Reads the authenticated GaussianEdit board, claims one authorized handoff, and uses a draft GitHub pull request plus one idempotent @codex comment to start cloud work.",
+    "developerName": "GaussianEdit",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Use $dispatch-cloud-work to dispatch at most one eligible GaussianEdit handoff.",
+      "Check the private board and return NOOP when no immutable handoff is eligible."
+    ]
+  },
+  "apps": "./.app.json"
+}

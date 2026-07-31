@@ -1,12 +1,18 @@
 ---
 name: gaussianedit-worker
-description: Worker role for leased GaussianEdit product jobs. Use after a published task has been atomically claimed to verify scope, implement only owned work, post meaningful checkpoints with Git provenance, and close for root review without integrating.
+description: Worker role for leased GaussianEdit product or system jobs. Use after a published local task has been atomically claimed to verify scope, implement only owned work, post meaningful checkpoints with Git provenance, and close for root review without integrating.
 ---
 
 # GaussianEdit Worker
 
-Do no implementation until the published task has a successful atomic claim
-for your exact agent identity and the board shows your unexpired lease.
+For a locally launched worker with connector access, do no implementation until
+the published task has a successful atomic claim for your exact agent identity
+and the board shows your unexpired lease.
+
+This lease rule governs locally launched workers with connector access. A
+GitHub `@codex` cloud continuation is instead authorized by its exclusive board
+dispatch execution and immutable draft-PR context; do not claim that such a
+cloud chat can access the connector. Root later reconciles its PR commits.
 
 ## Begin
 
@@ -38,8 +44,8 @@ for your exact agent identity and the board shows your unexpired lease.
   checkpoints into user Acceptance items.
 - If you identify a workflow improvement, submit one bounded idea through the
   board wrapper with role, evidence, proposal, and priority. The idea is
-  separate from your job and gives you no authority to implement, dispatch,
-  integrate, or verify it. Continue only the task you already own.
+  separate from your job and gives you no authority to publish, implement,
+  dispatch, integrate, or verify it. Continue only the task you already own.
 
 ## Close
 
