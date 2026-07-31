@@ -1,6 +1,6 @@
 {
   "name": "gaussianedit-orchestration",
-  "version": "0.1.0",
+  "version": "0.1.0+codex.20260731114202",
   "description": "Safely coordinates GaussianEdit development through its authenticated board and immutable cloud handoffs.",
   "author": {
     "name": "GaussianEdit"
@@ -12,7 +12,10 @@
     "longDescription": "Reads the authenticated GaussianEdit board, enforces fail-closed single-job dispatch, and coordinates immutable handoffs between local Codex work and cloud workers.",
     "developerName": "GaussianEdit",
     "category": "Productivity",
-    "capabilities": ["Read", "Write"],
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
     "defaultPrompt": [
       "Use $dispatch-cloud-work to dispatch at most one safely eligible GaussianEdit job.",
       "Check the GaussianEdit board and return NOOP when no cloud handoff is eligible."
