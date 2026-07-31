@@ -12,15 +12,21 @@ function allowedEndpoint(value) {
 }
 
 export function createFeedbackIdempotencyKey(candidateId, itemId, decision) {
-  return `candidate-feedback:${encodeURIComponent(candidateId)}:${encodeURIComponent(itemId)}:${decision}`;
+  return `candidate-feedback:${candidateId}:${itemId}:${decision}`
+    .replace(/[^A-Za-z0-9._:-]/g, '-')
+    .slice(0, 128);
 }
 
 export function normalizeCandidateFeedback(input = {}) {
   const candidateId = boundedText(input.candidateId, MAX_ID_LENGTH);
   const itemId = boundedText(input.itemId, MAX_ID_LENGTH);
+  const taskId = boundedText(input.taskId, MAX_ID_LENGTH);
+  const owner = boundedText(input.owner, MAX_ID_LENGTH);
+  const workspace = boundedText(input.workspace, MAX_ID_LENGTH);
   const decision = String(input.decision ?? '').toLowerCase();
   const comment = boundedText(input.comment, MAX_COMMENT_LENGTH);
-  if (!candidateId || !itemId || (decision !== 'ok' && decision !== 'issue')) {
+  if (!candidateId || !itemId || !taskId || !owner || !workspace
+    || (decision !== 'ok' && decision !== 'issue')) {
     throw new Error('Choose Looks good or Back to loop for a valid candidate item.');
   }
   if (decision === 'issue' && !comment) {
@@ -29,6 +35,9 @@ export function normalizeCandidateFeedback(input = {}) {
   return {
     candidateId,
     itemId,
+    taskId,
+    owner,
+    workspace,
     decision,
     comment,
     idempotencyKey: createFeedbackIdempotencyKey(candidateId, itemId, decision),
@@ -52,7 +61,16 @@ export function createCandidateFeedbackBridge({
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(feedback),
+        body: JSON.stringify({
+          taskId: feedback.taskId,
+          action: feedback.decision === 'ok' ? 'looks_good' : 'back_to_loop',
+          note: feedback.comment,
+          idempotencyKey: feedback.idempotencyKey,
+          candidateId: feedback.candidateId,
+          itemId: feedback.itemId,
+          owner: feedback.owner,
+          workspace: feedback.workspace,
+        }),
       });
     } catch {
       throw new Error('Feedback was not imported. Keep this item pending and try again.');
@@ -64,7 +82,8 @@ export function createCandidateFeedbackBridge({
     } catch {
       // A non-JSON acknowledgement is never evidence of durable import.
     }
-    if (!response.ok || body?.imported !== true) {
+    const expectedAction = feedback.decision === 'ok' ? 'looks_good' : 'back_to_loop';
+    if (!response.ok || body?.taskId !== feedback.taskId || body?.action !== expectedAction) {
       throw new Error(boundedText(body?.error, 180)
         || 'Feedback was not imported. Keep this item pending and try again.');
     }

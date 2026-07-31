@@ -5,6 +5,9 @@ import { basename, join } from 'node:path';
 
 const trackerOrigin = process.env.GAUSSIANEDIT_TRACKER_ORIGIN?.trim();
 const trackerStartupIssue = process.env.GAUSSIANEDIT_TRACKER_STARTUP_ISSUE?.trim();
+const orchestrationOrigin = process.env.GAUSSIANEDIT_ORCHESTRATION_BASE_URL?.trim();
+const orchestrationApiToken = process.env.GAUSSIANEDIT_ORCHESTRATION_API_TOKEN?.trim();
+const sitesBypassToken = process.env.GAUSSIANEDIT_SITES_BYPASS_TOKEN?.trim();
 
 function unavailableTracker() {
   return {
@@ -155,6 +158,16 @@ export default defineConfig({
       'Cross-Origin-Embedder-Policy': 'require-corp',
     },
     proxy: {
+      ...(orchestrationOrigin && orchestrationApiToken ? {
+        '/api/orchestration/board-action': {
+          target: orchestrationOrigin,
+          changeOrigin: true,
+          headers: {
+            Authorization: `Bearer ${orchestrationApiToken}`,
+            ...(sitesBypassToken ? { 'x-sites-bypass-token': sitesBypassToken } : {}),
+          },
+        },
+      } : {}),
       '/api/sam-tracking': {
         target: trackerOrigin || 'http://127.0.0.1:8091',
         changeOrigin: false,

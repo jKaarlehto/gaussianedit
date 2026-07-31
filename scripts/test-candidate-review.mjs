@@ -12,6 +12,8 @@ import {
   normalizeCandidateFeedback,
 } from '../candidateFeedback.js';
 
+const route = { taskId: 'scan-coordinator-live', owner: 'scan_coordinator_live', workspace: '3D Object' };
+
 class FakeElement {
   constructor(tagName) {
     this.tagName = tagName.toUpperCase();
@@ -93,13 +95,15 @@ class FakeDocument {
 }
 
 assert.deepEqual(normalizeCandidateFeedback({
-  candidateId: 'candidate-42', itemId: 'fifo', decision: 'issue', comment: ' Needs another pass. ',
+  candidateId: 'candidate-42', itemId: 'fifo', ...route,
+  decision: 'issue', comment: ' Needs another pass. ',
 }), {
-  candidateId: 'candidate-42', itemId: 'fifo', decision: 'issue', comment: 'Needs another pass.',
+  candidateId: 'candidate-42', itemId: 'fifo', ...route,
+  decision: 'issue', comment: 'Needs another pass.',
   idempotencyKey: 'candidate-feedback:candidate-42:fifo:issue',
 });
 assert.throws(
-  () => normalizeCandidateFeedback({ candidateId: 'candidate-42', itemId: 'fifo', decision: 'issue' }),
+  () => normalizeCandidateFeedback({ candidateId: 'candidate-42', itemId: 'fifo', ...route, decision: 'issue' }),
   /needs a short comment/i,
 );
 let request = null;
@@ -107,15 +111,16 @@ const bridge = createCandidateFeedbackBridge({
   endpoint: 'https://not-allowed.example/feedback',
   fetchImpl: async (url, options) => {
     request = { url, options };
-    return { ok: true, json: async () => ({ imported: true }) };
+    return { ok: true, json: async () => ({ taskId: route.taskId, action: 'looks_good' }) };
   },
 });
-await bridge.submit({ candidateId: 'candidate-42', itemId: 'fifo', decision: 'ok', comment: '' });
+await bridge.submit({ candidateId: 'candidate-42', itemId: 'fifo', ...route, decision: 'ok', comment: '' });
 assert.equal(request.url, '/api/orchestration/board-action', 'only the fixed same-origin route is allowed');
 assert.equal(request.options.credentials, 'same-origin');
 assert.deepEqual(JSON.parse(request.options.body), {
-  candidateId: 'candidate-42', itemId: 'fifo', decision: 'ok', comment: '',
+  taskId: route.taskId, action: 'looks_good', note: '',
   idempotencyKey: 'candidate-feedback:candidate-42:fifo:ok',
+  candidateId: 'candidate-42', itemId: 'fifo', owner: route.owner, workspace: route.workspace,
 });
 
 class FakeStorage {
@@ -139,16 +144,16 @@ class FakeStorage {
 const release = {
   id: 'candidate-42',
   reviewItems: [
-    { id: 'rgb-view', label: 'RGB view is visible before its mask' },
-    { id: 'fifo', label: 'Views leave the tray in order' },
-    { id: 'fifo', label: 'duplicate is ignored' },
-    { id: '', label: 'invalid is ignored' },
+    { id: 'rgb-view', label: 'RGB view is visible before its mask', ...route },
+    { id: 'fifo', label: 'Views leave the tray in order', ...route },
+    { id: 'fifo', label: 'duplicate is ignored', ...route },
+    { id: '', label: 'invalid is ignored', ...route },
   ],
 };
 
 assert.deepEqual(normalizeReviewItems(release.reviewItems), [
-  { id: 'rgb-view', label: 'RGB view is visible before its mask' },
-  { id: 'fifo', label: 'Views leave the tray in order' },
+  { id: 'rgb-view', label: 'RGB view is visible before its mask', ...route },
+  { id: 'fifo', label: 'Views leave the tray in order', ...route },
 ]);
 assert.deepEqual(classifyReviewState({}), { key: 'pending', label: 'Pending' });
 assert.deepEqual(
@@ -226,7 +231,7 @@ assert.equal(report, [
 assert.equal(
   formatReviewReport({
     id: 'no-sentiment',
-    reviewItems: [{ id: 'checked', label: 'Ambiguous-angle gate accepted' }],
+    reviewItems: [{ id: 'checked', label: 'Ambiguous-angle gate accepted', ...route }],
   }, new Map([
     ['checked', { status: 'ok', comment: 'This note says the gate was not accepted.' }],
   ])),
@@ -260,7 +265,7 @@ assert.equal(
 
 const legacyRelease = {
   id: 'legacy-schema',
-  reviewItems: [{ id: 'legacy-check', label: 'Legacy checkbox decision' }],
+  reviewItems: [{ id: 'legacy-check', label: 'Legacy checkbox decision', ...route }],
 };
 storage.setItem(
   reviewStorageKey(legacyRelease.id, 'legacy-check'),
@@ -287,11 +292,11 @@ assert.equal(
 
 const loadedRc1 = {
   id: 'rc1',
-  reviewItems: [{ id: 'same-check', label: 'Check the loaded rc1 behavior' }],
+  reviewItems: [{ id: 'same-check', label: 'Check the loaded rc1 behavior', ...route }],
 };
 const announcedRc2 = {
   id: 'rc2',
-  reviewItems: [{ id: 'same-check', label: 'Check the announced rc2 behavior' }],
+  reviewItems: [{ id: 'same-check', label: 'Check the announced rc2 behavior', ...route }],
 };
 const hmrHost = new FakeElement('div');
 const hmrInbox = createCandidateReviewInbox({

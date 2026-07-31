@@ -8,6 +8,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const output = path.resolve(process.argv[2] ?? path.join(root, ".codex", "orchestration", "framework-manifest.json"));
 const files = [
   ["agent-guide", "AGENTS.md"],
+  ["orchestrator-skill", ".codex/skills/gaussianedit-orchestrator/SKILL.md"],
+  ["worker-skill", ".codex/skills/gaussianedit-worker/SKILL.md"],
   ["orchestration-handoff", "ORCHESTRATION_HANDOFF.md"],
   ["orchestration-kickoff", "ORCHESTRATION_KICKOFF_PROMPT.md"],
   ["scheduled-dispatch", "SCHEDULED_DISPATCH_PROMPT.md"],

@@ -14,18 +14,22 @@ export const releaseMetadata = Object.freeze({
     Object.freeze({
       id: 'scan-runtime-continues-after-growth',
       label: 'After an accepted view adds splats, does scanning continue through the later angles?',
+      taskId: 'scan-coordinator-live', owner: 'scan_coordinator_live', workspace: '3D Object',
     }),
     Object.freeze({
       id: 'scan-runtime-pause-resume',
       label: 'Does Pause then Resume continue the same scan without duplicate tray work or restarted counters?',
+      taskId: 'scan-coordinator-live', owner: 'scan_coordinator_live', workspace: '3D Object',
     }),
     Object.freeze({
       id: 'scan-runtime-cancel-on-edit',
       label: 'Does editing the starting mask stop the scan promptly and require Use this object again?',
+      taskId: 'scan-coordinator-live', owner: 'scan_coordinator_live', workspace: '2D Mask',
     }),
     Object.freeze({
       id: 'object-view-single-mode',
       label: 'Are the disconnected Gaussians toggle and its unavailable-mode message gone from 3D Object?',
+      taskId: 'scan-coordinator-live', owner: 'scan_coordinator_live', workspace: '3D Object',
     }),
   ]),
 });

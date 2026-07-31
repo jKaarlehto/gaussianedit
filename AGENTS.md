@@ -438,10 +438,24 @@ they do not become interchangeable confidence numbers.
   `blocked`, `comment`, and `completed` events with its helper, and export the
   bounded dashboard JSON after meaningful changes. Do not post secrets,
   absolute paths, source/log dumps, or redundant unchanged status.
+- Role behavior is also published as repo-owned portable skills:
+  `.codex/skills/gaussianedit-orchestrator/SKILL.md` for root and
+  `.codex/skills/gaussianedit-worker/SKILL.md` for claimed workers. Local and
+  cloud agents read the matching role skill from the connector's versioned
+  framework bundle before acting. Keep these skills, this guide, and the MCP
+  bundle synchronized so root integration authority cannot drift into worker
+  prompts.
 - Post once immediately after delegation/start, then only when a fact changes
   materially, work blocks, or review begins, and once at closeout before the
   agent stops. Do not emit periodic heartbeats, restate unchanged progress, or
   spend conversation tokens duplicating the structured event.
+- Each work item has one chronological board timeline built from these
+  orchestration events. Git is the provenance layer inside that timeline, not
+  a replacement for it: every code-changing checkpoint records the remote
+  branch, immutable commit, pushed/dirty state, and relevant tests, while the
+  event summary explains the changed fact, blocker, review decision, or next
+  action in plain language. New published jobs require a short human-readable
+  description. Do not use commit messages alone as agent status.
 - Status events carry stable task and review IDs plus `agent`, `priority`,
   `files`, `status`, `summary`, `tests`, `blockers`, `next`, `reviewItems`,
   `commit`, `timestamp`, and authority. Worker events are always

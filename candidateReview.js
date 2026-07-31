@@ -12,7 +12,11 @@ export function normalizeReviewItems(items) {
     const label = String(item?.label ?? '').trim().slice(0, 180);
     if (!id || !label || seen.has(id)) continue;
     seen.add(id);
-    normalized.push({ id, label });
+    const taskId = String(item?.taskId ?? '').trim().slice(0, 80);
+    const owner = String(item?.owner ?? '').trim().slice(0, 80);
+    const workspace = String(item?.workspace ?? '').trim().slice(0, 80);
+    if (!taskId || !owner || !workspace) continue;
+    normalized.push({ id, label, taskId, owner, workspace });
   }
   return normalized;
 }
@@ -168,6 +172,9 @@ export function createCandidateReviewInbox({
           await feedbackBridge.submit({
             candidateId: release.id,
             itemId: item.id,
+            taskId: item.taskId,
+            owner: item.owner,
+            workspace: item.workspace,
             decision,
             comment: comment.value,
           });
